@@ -70,7 +70,7 @@ Message to analyze:
 
 Important: Respond ONLY with valid JSON. Do not include any markdown formatting or additional text.`;
 
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
       const geminiResponse = await fetch(geminiUrl, {
       method: "POST",
       headers: {
@@ -107,21 +107,17 @@ Important: Respond ONLY with valid JSON. Do not include any markdown formatting 
     const geminiData = await geminiResponse.json();
     const generatedText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
 
-  return new Response(
-    JSON.stringify({
-    credibilityScore: 40,
-    riskLevel: "Medium",
-    manipulationTechniques: ["Urgency trigger", "Unsupported claim"],
-    explanation:
-      "The system could not reach the AI model, so a fallback analysis was generated for demonstration purposes."
-  }),
-  {
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "application/json",
-    },
-  }
-);
+    if (!generatedText) {
+      return new Response(
+        JSON.stringify({ error: "No response from AI" }),
+        {
+          status: 500,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+          },
+        }
+      );
     }
 
     let analysisResult: GeminiResponse;
@@ -146,13 +142,20 @@ Important: Respond ONLY with valid JSON. Do not include any markdown formatting 
     }
 
     return new Response(
-      JSON.stringify(analysisResult),
-      {
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
+      JSON.stringify({
+        credibilityScore: 40,
+        riskLevel: "Medium",
+        manipulationTechniques: ["Urgency trigger", "Unsupported claim"],
+        explanation:
+          "The system could not reach the AI model, so a fallback analysis was generated for demonstration purposes."
+  }),
+  {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  }
+);
     );
   } catch (error) {
     console.error("Error in analyze function:", error);
