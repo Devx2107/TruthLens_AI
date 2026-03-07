@@ -70,8 +70,7 @@ Message to analyze:
 
 Important: Respond ONLY with valid JSON. Do not include any markdown formatting or additional text.`;
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`;
-
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
     const geminiResponse = await fetch(geminiUrl, {
       method: "POST",
       headers: {
