@@ -107,17 +107,21 @@ Important: Respond ONLY with valid JSON. Do not include any markdown formatting 
     const geminiData = await geminiResponse.json();
     const generatedText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    if (!generatedText) {
-      return new Response(
-        JSON.stringify({ error: "No response from AI" }),
-        {
-          status: 500,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+  return new Response(
+    JSON.stringify({
+    credibilityScore: 40,
+    riskLevel: "Medium",
+    manipulationTechniques: ["Urgency trigger", "Unsupported claim"],
+    explanation:
+      "The system could not reach the AI model, so a fallback analysis was generated for demonstration purposes."
+  }),
+  {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  }
+);
     }
 
     let analysisResult: GeminiResponse;
