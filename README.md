@@ -30,7 +30,8 @@ A full-stack misinformation detection web app powered by Google Gemini AI. Analy
 Before running the app, you need:
 
 1. A Google Gemini API key
-   - Get one at: https://makersuite.google.com/app/apikey
+   - Get one at: https://aistudio.google.com/app/apikey
+   - The backend currently targets `gemini-3.5-flash`. If Google deprecates this model later, update the model name in `supabase/functions/analyze/index.ts`.
 
 ## Setup Instructions
 

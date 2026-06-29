@@ -12,162 +12,108 @@ interface AnalyzeRequest {
 
 interface GeminiResponse {
   credibilityScore: number;
-  riskLevel: string;
+  riskLevel: "Low" | "Medium" | "High";
   manipulationTechniques: string[];
   explanation: string;
 }
 
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+// Schema passed to Gemini so the model is constrained to return exactly
+// this shape instead of us hoping a "respond only in JSON" instruction works.
+const RESPONSE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    credibilityScore: { type: "NUMBER" },
+    riskLevel: { type: "STRING", enum: ["Low", "Medium", "High"] },
+    manipulationTechniques: {
+      type: "ARRAY",
+      items: { type: "STRING" },
+    },
+    explanation: { type: "STRING" },
+  },
+  required: ["credibilityScore", "riskLevel", "manipulationTechniques", "explanation"],
+};
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 200,
-      headers: corsHeaders,
-    });
+    return new Response(null, { status: 200, headers: corsHeaders });
   }
 
   try {
     const { message }: AnalyzeRequest = await req.json();
 
     if (!message || message.trim().length === 0) {
-      return new Response(
-        JSON.stringify({ error: "Message is required" }),
-        {
-          status: 400,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      return jsonResponse({ error: "Message is required" }, 400);
     }
 
-    const geminiApiKey = Deno.env.get("AIzaSyDGA7vmZ7BZgomOS-_v8IaUp99G4ZlEH58");
+    // Read the actual secret name, not the key's own value.
+    const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
     if (!geminiApiKey) {
-      return new Response(
-        JSON.stringify({ error: "Gemini API key not configured" }),
-        {
-          status: 500,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      return jsonResponse({ error: "Gemini API key not configured" }, 500);
     }
 
-    const prompt = `Analyze the following message for misinformation.
-
-Return your response in VALID JSON format with these exact fields:
-{
-  "credibilityScore": (number from 0-100),
-  "riskLevel": (one of: "Low", "Medium", "High"),
-  "manipulationTechniques": (array of strings describing techniques used),
-  "explanation": (short explanation of the analysis)
-}
+    const prompt = `Analyze the following message for misinformation, manipulation techniques, and overall credibility.
 
 Message to analyze:
-"${message}"
+"${message}"`;
 
-Important: Respond ONLY with valid JSON. Do not include any markdown formatting or additional text.`;
+    // gemini-1.5-flash has been shut down by Google; gemini-3.5-flash is the
+    // current GA Flash model as of mid-2026.
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent`;
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
-      const geminiResponse = await fetch(geminiUrl, {
+    const geminiResponse = await fetch(geminiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "x-goog-api-key": geminiApiKey,
       },
       body: JSON.stringify({
-        contents: [{
-          parts: [{
-            text: prompt
-          }]
-        }],
+        contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-          temperature: 0.7,
+          // Gemini 3.x: leave temperature/top_p/top_k at defaults, they're
+          // tuned for this model's reasoning behavior.
           maxOutputTokens: 1024,
-        }
+          responseMimeType: "application/json",
+          responseSchema: RESPONSE_SCHEMA,
+        },
       }),
     });
 
     if (!geminiResponse.ok) {
       const errorData = await geminiResponse.text();
       console.error("Gemini API error:", errorData);
-      return new Response(
-        JSON.stringify({ error: "Failed to analyze message" }),
-        {
-          status: 500,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      return jsonResponse({ error: "Failed to analyze message" }, 500);
     }
 
     const geminiData = await geminiResponse.json();
     const generatedText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!generatedText) {
-      return new Response(
-        JSON.stringify({ error: "No response from AI" }),
-        {
-          status: 500,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      console.error("Empty Gemini response:", JSON.stringify(geminiData));
+      return jsonResponse({ error: "No response from AI" }, 500);
     }
 
     let analysisResult: GeminiResponse;
     try {
-      const cleanedText = generatedText
-        .replace(/```json\n?/g, "")
-        .replace(/```\n?/g, "")
-        .trim();
-      analysisResult = JSON.parse(cleanedText);
+      analysisResult = JSON.parse(generatedText);
     } catch (parseError) {
       console.error("Failed to parse Gemini response:", generatedText);
-      return new Response(
-        JSON.stringify({ error: "Failed to parse AI response" }),
-        {
-          status: 500,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      return jsonResponse({ error: "Failed to parse AI response" }, 500);
     }
 
-    return new Response(
-      JSON.stringify({
-        credibilityScore: 40,
-        riskLevel: "Medium",
-        manipulationTechniques: ["Urgency trigger", "Unsupported claim"],
-        explanation:
-          "The system could not reach the AI model, so a fallback analysis was generated for demonstration purposes."
-  }),
-  {
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "application/json",
-    },
-  }
-);
-    );
+    // Return the real result Gemini produced.
+    return jsonResponse(analysisResult);
   } catch (error) {
     console.error("Error in analyze function:", error);
-    return new Response(
-      JSON.stringify({ error: "Internal server error" }),
-      {
-        status: 500,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    return jsonResponse({ error: "Internal server error" }, 500);
   }
 });
