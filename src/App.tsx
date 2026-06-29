@@ -1,128 +1,614 @@
-import { useState } from 'react';
-import { Search, Loader2 } from 'lucide-react';
-import type { AnalysisResult } from './types';
+import React, { FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
+import {
+  ArrowLeft,
+  Bot,
+  Copy,
+  History,
+  Link2,
+  Loader2,
+  LogIn,
+  MoonStar,
+  Plus,
+  Search,
+  Shield,
+  Sparkles,
+  SunMedium,
+  TextCursorInput,
+  Upload,
+} from 'lucide-react';
 import ResultCard from './components/ResultCard';
+import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
+import { analyzeRequest, fetchPublicScan, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
+import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
+import { supabase, hasSupabaseConfig } from './lib/supabase';
 
-const FAKE_EXAMPLE = "Hot water cures all viruses. Share immediately!";
-const REAL_EXAMPLE = "ISRO launches new satellite to monitor climate change.";
+void React;
+
+type RouteState = { kind: 'home' } | { kind: 'scan'; id: string };
+
+const loadingStages = ['Reading message', 'Checking sources', 'Scoring credibility'];
+
+function detectRoute(): RouteState {
+  const match = window.location.pathname.match(/^\/scan\/([^/]+)$/i);
+  if (match?.[1]) {
+    return { kind: 'scan', id: decodeURIComponent(match[1]) };
+  }
+
+  return { kind: 'home' };
+}
+
+function copyText(value: string) {
+  return navigator.clipboard.writeText(value);
+}
+
+function mergeHistory(primary: AnalysisResult[], secondary: AnalysisResult[]) {
+  const map = new Map<string, AnalysisResult>();
+  [...secondary, ...primary].forEach((item) => map.set(item.id, item));
+  return [...map.values()].sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)).slice(0, 20);
+}
+
+function ModeButton({
+  active,
+  icon,
+  label,
+  onClick,
+  }: {
+    active: boolean;
+    icon: ReactNode;
+    label: string;
+    onClick: () => void;
+  }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition ${
+        active
+          ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-50 shadow-[0_10px_30px_rgba(34,211,238,0.2)]'
+          : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white'
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
 
 function App() {
-  const [message, setMessage] = useState('');
+  const [theme, setTheme] = useState<ThemeMode>(() => getThemePreference());
+  const [route, setRoute] = useState<RouteState>(() => detectRoute());
+  const [mode, setMode] = useState<AnalysisMode>('single');
+  const [inputKind, setInputKind] = useState<InputKind>('text');
+  const [singleInput, setSingleInput] = useState('');
+  const [batchInput, setBatchInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [batchResults, setBatchResults] = useState<AnalysisResult[]>([]);
+  const [history, setHistory] = useState<AnalysisResult[]>([]);
+  const [sharedScan, setSharedScan] = useState<AnalysisResult | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  const [session, setSession] = useState<SessionSnapshot | null>(null);
+  const [email, setEmail] = useState('');
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
 
-  const analyzeMessage = async (text: string) => {
-    if (!text.trim()) {
-      setError('Please enter a message to analyze');
+  const loadingMessage = loadingStages[loadingStage % loadingStages.length];
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    saveThemePreference(theme);
+  }, [theme]);
+
+  useEffect(() => {
+    const syncRoute = () => setRoute(detectRoute());
+    window.addEventListener('popstate', syncRoute);
+    return () => window.removeEventListener('popstate', syncRoute);
+  }, []);
+
+  useEffect(() => {
+    const local = getLocalScan(route.kind === 'scan' ? route.id : '');
+    if (route.kind !== 'scan') {
+      setHistory(loadLocalHistory());
+      setSharedScan(null);
+      setNotFound(false);
+      return;
+    }
+
+    if (local) {
+      setSharedScan(local);
+      setNotFound(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSharedScan(null);
+    setNotFound(false);
+
+    fetchPublicScan(route.id).then((scan) => {
+      if (cancelled) return;
+      if (scan) {
+        setSharedScan(scan);
+        saveLocalScan(scan);
+      } else {
+        setNotFound(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [route]);
+
+  useEffect(() => {
+    setHistory(loadLocalHistory());
+  }, []);
+
+  useEffect(() => {
+    const client = supabase;
+    if (!client) {
+      return;
+    }
+
+    const init = async () => {
+      const { data } = await client.auth.getSession();
+      const activeSession = data.session;
+      setSession(activeSession ? { id: activeSession.user.id, email: activeSession.user.email ?? null } : null);
+
+      const localHistory = loadLocalHistory();
+      if (activeSession) {
+        const remoteHistory = await loadUserHistory(activeSession.user.id);
+        setHistory(mergeHistory(remoteHistory, localHistory));
+      } else {
+        setHistory(localHistory);
+      }
+    };
+
+    void init();
+
+    const { data: authListener } = client.auth.onAuthStateChange(async (_event, nextSession) => {
+      const next = nextSession ? { id: nextSession.user.id, email: nextSession.user.email ?? null } : null;
+      setSession(next);
+      if (next) {
+        const remoteHistory = await loadUserHistory(next.id);
+        setHistory((current) => mergeHistory(remoteHistory, current));
+      }
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const currentResult = route.kind === 'scan' ? sharedScan : result;
+
+  const historyItems = useMemo(() => history.slice(0, 8), [history]);
+
+  const persistScan = async (scan: AnalysisResult) => {
+    const merged = saveLocalScan(scan);
+    saveLocalHistory(merged);
+    setHistory((current) => mergeHistory([scan], current));
+    if (session) {
+      await saveAnalysisForUser(scan, session.id);
+    }
+  };
+
+  const startAnalysis = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+
+    const singleValue = singleInput.trim();
+    const batchValues = batchInput
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (mode === 'batch' && batchValues.length === 0) {
+      setError('Drop in at least one headline or link for batch mode.');
+      return;
+    }
+
+    if (mode !== 'batch' && singleValue.length === 0) {
+      setError(inputKind === 'url' ? 'Paste a link first.' : 'Paste a message or headline first.');
       return;
     }
 
     setLoading(true);
-    setError(null);
+    setLoadingStage(0);
     setResult(null);
+    setBatchResults([]);
+
+    const interval = window.setInterval(() => {
+      setLoadingStage((stage) => (stage + 1) % loadingStages.length);
+    }, 1300);
 
     try {
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze`;
+      const response = await analyzeRequest(
+        mode === 'batch'
+          ? {
+              mode: 'batch',
+              items: batchValues.map((item) => ({
+                input: item,
+                inputType: item.match(/^https?:\/\//i) || item.match(/^www\./i) ? 'url' : 'text',
+              })),
+            }
+          : {
+              mode: 'single',
+              input: singleValue,
+              inputType: inputKind,
+            },
+      );
 
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message: text }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to analyze message');
+      if ('results' in response) {
+        setBatchResults(response.results);
+        await Promise.all(response.results.map((scan) => persistScan(scan)));
+        setResult(response.results[0] ?? null);
+      } else {
+        setResult(response);
+        await persistScan(response);
+        window.history.pushState({}, '', `/scan/${response.id}`);
+        setRoute({ kind: 'scan', id: response.id });
       }
-
-      const data = await response.json();
-      setResult(data);
-    } catch (err) {
-      setError('Unable to analyze the message. Please try again.');
-      console.error('Analysis error:', err);
+    } catch (analysisError) {
+      setError(analysisError instanceof Error ? analysisError.message : 'Unable to analyze the message. Please try again.');
     } finally {
+      window.clearInterval(interval);
       setLoading(false);
     }
   };
 
-  const handleAnalyze = () => {
-    analyzeMessage(message);
+  const openScan = (scanId: string) => {
+    window.history.pushState({}, '', `/scan/${scanId}`);
+    setRoute({ kind: 'scan', id: scanId });
   };
 
-  const handleExample = (example: string) => {
-    setMessage(example);
-    setResult(null);
-    setError(null);
+  const copyShareLink = async (scan: AnalysisResult) => {
+    const shareUrl = `${window.location.origin}/scan/${scan.id}`;
+    await copyText(shareUrl);
+  };
+
+  const signIn = async () => {
+    if (!supabase || !email.trim()) {
+      setAuthMessage('Add an email address first.');
+      return;
+    }
+
+    const { error: signInError } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: {
+        emailRedirectTo: window.location.origin,
+      },
+    });
+
+    if (signInError) {
+      setAuthMessage(signInError.message);
+      return;
+    }
+
+    setAuthMessage('Magic link sent. Check your inbox.');
+  };
+
+  const signOut = async () => {
+    if (!supabase) {
+      return;
+    }
+
+    await supabase.auth.signOut();
+    setSession(null);
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <div className="container mx-auto px-4 py-12 max-w-3xl">
-        <div className="text-center mb-8">
-          <div className="flex items-center justify-center gap-2 mb-3">
-            <Search className="w-8 h-8 text-blue-600" />
-            <h1 className="text-4xl font-bold text-gray-900">TruthLens AI</h1>
+    <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#081122_45%,_#0b1324_100%)] text-slate-100">
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] bg-[size:28px_28px] opacity-30" />
+
+      <div className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
+        <header className="mb-6 flex flex-col gap-4 rounded-[2rem] border border-white/10 bg-white/5 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.18)] backdrop-blur-xl sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-start gap-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-lg shadow-cyan-500/20">
+              <Shield className="h-7 w-7" />
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">TruthLens AI</p>
+              <h1 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">
+                Smarter misinformation scans that feel alive.
+              </h1>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+                Paste text, links, or batches of headlines. TruthLens breaks claims apart, scores credibility, and keeps a shareable record of every scan.
+              </p>
+            </div>
           </div>
-          <p className="text-gray-600 text-lg">Detect misinformation instantly</p>
-        </div>
 
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-          <textarea
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder="Paste a news headline or message here to analyze..."
-            className="w-full h-32 p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none text-gray-700"
-            disabled={loading}
-          />
-
-          <div className="mt-4 flex flex-col sm:flex-row gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              onClick={handleAnalyze}
-              disabled={loading || !message.trim()}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2"
+              type="button"
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
             >
-              {loading ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Analyzing...
-                </>
+              {theme === 'dark' ? <SunMedium className="h-4 w-4" /> : <MoonStar className="h-4 w-4" />}
+              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            </button>
+
+            <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-100">
+              <Bot className="h-4 w-4" />
+              {hasSupabaseConfig ? 'Supabase ready' : 'Demo mode'}
+            </span>
+          </div>
+        </header>
+
+        <main className="grid flex-1 gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <section className="space-y-6">
+            {route.kind === 'scan' ? (
+              <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.history.pushState({}, '', '/');
+                    setRoute({ kind: 'home' });
+                  }}
+                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white/10 hover:text-white dark:text-slate-200"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  Back to scanner
+                </button>
+
+                <div className="mt-5">
+                  {currentResult ? (
+                    <ResultCard result={currentResult} onCopyLink={copyShareLink} />
+                  ) : notFound ? (
+                    <div className="rounded-[1.75rem] border border-dashed border-white/10 bg-white/5 p-8 text-center">
+                      <p className="text-xl font-bold text-white">This scan link has no saved data yet.</p>
+                      <p className="mt-2 text-sm text-slate-300">
+                        The share page works best after a scan has been saved locally or synced to Supabase.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="rounded-[1.75rem] border border-white/10 bg-white/5 p-8 text-center text-slate-300">
+                      Loading scan...
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <>
+                <form onSubmit={startAnalysis} className="glass-panel rounded-[2rem] p-5 sm:p-6">
+                  <div className="flex flex-wrap gap-2">
+                    <ModeButton active={mode === 'single'} icon={<TextCursorInput className="h-4 w-4" />} label="Single" onClick={() => setMode('single')} />
+                    <ModeButton active={mode === 'batch'} icon={<Plus className="h-4 w-4" />} label="Batch" onClick={() => setMode('batch')} />
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <ModeButton active={inputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text input" onClick={() => setInputKind('text')} />
+                    <ModeButton active={inputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL input" onClick={() => setInputKind('url')} />
+                  </div>
+
+                  <div className="mt-5 space-y-3">
+                    <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">
+                      {mode === 'batch' ? 'Paste one headline or URL per line' : inputKind === 'url' ? 'Paste a link to scan' : 'Paste a message or headline'}
+                    </label>
+
+                    {mode === 'batch' ? (
+                      <textarea
+                        value={batchInput}
+                        onChange={(event) => setBatchInput(event.target.value)}
+                        placeholder={'Headline one\nHeadline two\nhttps://example.com/story'}
+                        className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/20"
+                        disabled={loading}
+                      />
+                    ) : (
+                      <textarea
+                        value={singleInput}
+                        onChange={(event) => setSingleInput(event.target.value)}
+                        placeholder={
+                          inputKind === 'url'
+                            ? 'https://news.example.com/story'
+                            : 'Hot water cures all viruses. Share immediately!'
+                        }
+                        className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/20"
+                        disabled={loading}
+                      />
+                    )}
+                  </div>
+
+                  <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-5 py-3 text-sm font-bold text-slate-950 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                      {loading ? loadingMessage : 'Analyze claim'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSingleInput('Hot water cures all viruses. Share immediately!');
+                        setBatchInput('Hot water cures all viruses. Share immediately!\nISRO launches a new satellite to monitor climate change.');
+                        setError(null);
+                      }}
+                      className="inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      Load examples
+                    </button>
+                  </div>
+
+                  {error && (
+                    <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+                      {error}
+                    </div>
+                  )}
+                </form>
+
+                {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} />}
+
+                {batchResults.length > 0 && mode === 'batch' && (
+                  <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
+                    <div className="mb-4 flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Batch results</p>
+                        <h2 className="mt-1 text-xl font-bold text-white">{batchResults.length} items scanned</h2>
+                      </div>
+                      <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm font-semibold text-slate-300">
+                        {batchResults.filter((scan) => scan.engine === 'gemini').length} AI backed
+                      </span>
+                    </div>
+                    <div className="space-y-4">
+                      {batchResults.map((scan) => (
+                        <button
+                          key={scan.id}
+                          type="button"
+                          onClick={() => openScan(scan.id)}
+                          className="w-full rounded-[1.5rem] border border-white/10 bg-white/5 p-4 text-left transition hover:-translate-y-0.5 hover:bg-white/10"
+                        >
+                          <div className="flex items-center justify-between gap-4">
+                            <div>
+                              <p className="font-semibold text-white">{scan.sourceTitle || scan.input}</p>
+                              <p className="mt-1 text-sm text-slate-400">{scan.summary}</p>
+                            </div>
+                            <span className="text-sm font-bold text-cyan-200">{scan.credibilityScore}/100</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+
+          <aside className="space-y-6">
+            <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Account</p>
+                  <h2 className="mt-1 text-xl font-bold text-white">History and sync</h2>
+                </div>
+                <History className="h-5 w-5 text-cyan-200" />
+              </div>
+
+              {supabase ? (
+                <div className="mt-4 space-y-4">
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    {session ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">{session.email || session.id}</p>
+                          <p className="text-xs text-slate-400">Signed in with Supabase Auth</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void signOut()}
+                          className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+                        >
+                          Sign out
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <input
+                          type="email"
+                          value={email}
+                          onChange={(event) => setEmail(event.target.value)}
+                          placeholder="you@example.com"
+                          className="w-full rounded-2xl border border-white/10 bg-slate-950/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-400/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void signIn()}
+                          className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-white px-4 py-3 text-sm font-bold text-slate-950 transition hover:-translate-y-0.5"
+                        >
+                          <LogIn className="h-4 w-4" />
+                          Email me a sign-in link
+                        </button>
+                      </div>
+                    )}
+
+                    {authMessage && <p className="mt-3 text-sm text-slate-300">{authMessage}</p>}
+                  </div>
+
+                  <p className="text-sm leading-6 text-slate-400">
+                    Signed-in users can sync their scan history to Supabase. Everyone else keeps a local history in the browser.
+                  </p>
+                </div>
               ) : (
-                <>
-                  <Search className="w-5 h-5" />
-                  Analyze Claim
-                </>
+                <p className="mt-4 text-sm leading-6 text-slate-400">
+                  Add your Supabase environment variables to enable sign-in, synced history, and public scan pages.
+                </p>
               )}
-            </button>
-          </div>
+            </section>
 
-          <div className="mt-4 flex flex-col sm:flex-row gap-2">
-            <button
-              onClick={() => handleExample(FAKE_EXAMPLE)}
-              disabled={loading}
-              className="flex-1 bg-gray-100 hover:bg-gray-200 disabled:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded-lg transition-colors text-sm"
-            >
-              Fake News Example
-            </button>
-            <button
-              onClick={() => handleExample(REAL_EXAMPLE)}
-              disabled={loading}
-              className="flex-1 bg-gray-100 hover:bg-gray-200 disabled:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded-lg transition-colors text-sm"
-            >
-              Real News Example
-            </button>
-          </div>
-        </div>
+            <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Recent</p>
+                  <h2 className="mt-1 text-xl font-bold text-white">Saved scans</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    saveLocalHistory([]);
+                    setHistory([]);
+                  }}
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
+                >
+                  Clear local
+                </button>
+              </div>
 
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
-            {error}
-          </div>
-        )}
+              <div className="mt-4 space-y-3">
+                {historyItems.length > 0 ? (
+                  historyItems.map((scan) => (
+                    <button
+                      key={scan.id}
+                      type="button"
+                      onClick={() => openScan(scan.id)}
+                      className="w-full rounded-2xl border border-white/10 bg-white/5 p-4 text-left transition hover:-translate-y-0.5 hover:bg-white/10"
+                    >
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold text-white">{scan.sourceTitle || scan.input}</p>
+                          <p className="mt-1 truncate text-sm text-slate-400">{scan.summary}</p>
+                        </div>
+                        <span className="text-sm font-bold text-cyan-200">{scan.credibilityScore}</span>
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-5 text-sm text-slate-400">
+                    No scans yet. Run one and we’ll keep it here.
+                  </div>
+                )}
+              </div>
+            </section>
 
-        {result && <ResultCard result={result} />}
+            <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Upload className="h-4 w-4 text-cyan-200" />
+                What’s new
+              </div>
+              <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-300">
+                <li>URL mode fetches page metadata before scoring.</li>
+                <li>Batch mode scans multiple lines in one go.</li>
+                <li>Results show confidence, claim breakdowns, and shareable cards.</li>
+                <li>History is saved locally, and Supabase sync kicks in when you sign in.</li>
+                <li>Public scan pages use `/scan/:id` when a scan has been saved.</li>
+              </ul>
+            </section>
+          </aside>
+        </main>
+
+        <footer className="mt-6 flex items-center justify-between gap-4 pb-2 text-xs text-slate-500">
+          <span>TruthLens AI</span>
+          <button
+            type="button"
+            onClick={() => void copyText(window.location.origin)}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            Copy app URL
+          </button>
+        </footer>
       </div>
     </div>
   );

@@ -1,32 +1,40 @@
+import React from 'react';
+
 interface CredibilityMeterProps {
   score: number;
+  confidence: number;
   riskLevel: 'Low' | 'Medium' | 'High';
 }
 
-export default function CredibilityMeter({ score, riskLevel }: CredibilityMeterProps) {
-  const getColor = () => {
-    if (riskLevel === 'Low') return 'bg-green-500';
-    if (riskLevel === 'Medium') return 'bg-yellow-500';
-    return 'bg-red-500';
-  };
-
-  const getTextColor = () => {
-    if (riskLevel === 'Low') return 'text-green-600';
-    if (riskLevel === 'Medium') return 'text-yellow-600';
-    return 'text-red-600';
-  };
+export default function CredibilityMeter({ score, confidence, riskLevel }: CredibilityMeterProps) {
+  void React;
+  const scoreColor =
+    riskLevel === 'Low' ? 'from-emerald-400 to-emerald-500' : riskLevel === 'Medium' ? 'from-amber-400 to-amber-500' : 'from-rose-400 to-rose-500';
 
   return (
-    <div className="space-y-2">
-      <div className="flex justify-between items-center">
-        <span className="text-sm font-medium text-gray-700">Credibility Score</span>
-        <span className={`text-2xl font-bold ${getTextColor()}`}>{score}/100</span>
+    <div className="space-y-4">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Credibility score</p>
+          <p className="mt-1 text-4xl font-black text-slate-950 dark:text-white">{score}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Confidence</p>
+          <p className="mt-1 text-xl font-semibold text-slate-700 dark:text-slate-200">{confidence}%</p>
+        </div>
       </div>
-      <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
-        <div
-          className={`h-full ${getColor()} transition-all duration-500 ease-out`}
-          style={{ width: `${score}%` }}
-        />
+
+      <div className="space-y-2">
+        <div className="h-4 overflow-hidden rounded-full bg-slate-200/80 dark:bg-slate-800">
+          <div
+            className={`h-full rounded-full bg-gradient-to-r ${scoreColor} transition-all duration-700 ease-out`}
+            style={{ width: `${score}%` }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+          <span>Low trust</span>
+          <span>High trust</span>
+        </div>
       </div>
     </div>
   );
