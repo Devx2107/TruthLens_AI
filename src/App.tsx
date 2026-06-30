@@ -96,6 +96,7 @@ function App() {
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement>(null);
+  const [footerVisible, setFooterVisible] = useState(false);
 
   const loadingMessage = loadingStages[loadingStage % loadingStages.length];
 
@@ -196,6 +197,18 @@ function App() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [accountOpen]);
+
+  useEffect(() => {
+    const SCROLL_THRESHOLD = 120;
+
+    const handleScroll = () => {
+      setFooterVisible(window.scrollY > SCROLL_THRESHOLD);
+    };
+
+    handleScroll();
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   const currentResult = route.kind === 'scan' ? sharedScan : result;
 
@@ -318,7 +331,7 @@ function App() {
     <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#081122_45%,_#0b1324_100%)] text-slate-100">
       <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] bg-[size:28px_28px] opacity-30" />
 
-      <div className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
+      <div className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 pb-24 sm:px-6 lg:px-8">
         <header className="mb-6 flex flex-col gap-4 rounded-[2rem] border border-white/10 bg-white/5 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.18)] backdrop-blur-xl sm:p-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-start gap-4">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-lg shadow-cyan-500/20">
@@ -631,16 +644,45 @@ function App() {
             </section>
         </main>
 
-        <footer className="mt-6 flex items-center justify-between gap-4 pb-2 text-xs text-slate-500">
-          <span>TruthLens AI</span>
-          <button
-            type="button"
-            onClick={() => void copyText(window.location.origin)}
-            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
-          >
-            <Copy className="h-3.5 w-3.5" />
-            Copy app URL
-          </button>
+        <footer
+          className={`fixed inset-x-0 bottom-0 z-30 transition-all duration-300 ${
+            footerVisible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
+          }`}
+        >
+          <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 border-t border-white/10 bg-slate-950/90 px-4 py-3 text-xs text-slate-400 backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+            <div className="flex items-center gap-2 font-semibold text-slate-300">
+              <Shield className="h-3.5 w-3.5 text-cyan-200" />
+              TruthLens AI
+            </div>
+
+            <nav className="flex flex-wrap items-center gap-4">
+              <a href="/privacy" className="transition hover:text-white">
+                Privacy Policy
+              </a>
+              <a href="/terms" className="transition hover:text-white">
+                Terms
+              </a>
+              <a href="mailto:hello@truthlens.ai" className="transition hover:text-white">
+                Contact
+              </a>
+              <a
+                href="https://github.com/Devx2107/TruthLens_AI"
+                target="_blank"
+                rel="noreferrer"
+                className="transition hover:text-white"
+              >
+                GitHub
+              </a>
+              <button
+                type="button"
+                onClick={() => void copyText(window.location.origin)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
+              >
+                <Copy className="h-3 w-3" />
+                Copy app URL
+              </button>
+            </nav>
+          </div>
         </footer>
       </div>
     </div>
