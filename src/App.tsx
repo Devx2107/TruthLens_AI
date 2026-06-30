@@ -335,7 +335,7 @@ function App() {
           </div>
         </header>
 
-        <main className="grid flex-1 gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+        <main className="flex flex-1 flex-col gap-6">
           <section className="space-y-6">
             {route.kind === 'scan' ? (
               <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
@@ -477,8 +477,7 @@ function App() {
             )}
           </section>
 
-          <aside className="space-y-6">
-            <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
+          <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Account</p>
@@ -595,7 +594,6 @@ function App() {
                 <li>Public scan pages use `/scan/:id` when a scan has been saved.</li>
               </ul>
             </section>
-          </aside>
         </main>
 
         <footer className="mt-6 flex items-center justify-between gap-4 pb-2 text-xs text-slate-500">
