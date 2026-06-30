@@ -63,3 +63,42 @@ textarea {
 .animate-pop-in {
   animation: popIn 0.45s ease-out both;
 }
+
+@keyframes floatBlobOne {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(40px, 60px) scale(1.15);
+  }
+}
+
+@keyframes floatBlobTwo {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(-50px, -30px) scale(1.1);
+  }
+}
+
+@keyframes floatBlobThree {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(30px, -50px) scale(1.2);
+  }
+}
+
+.animate-blob-one {
+  animation: floatBlobOne 18s ease-in-out infinite;
+}
+
+.animate-blob-two {
+  animation: floatBlobTwo 22s ease-in-out infinite;
+}
+
+.animate-blob-three {
+  animation: floatBlobThree 26s ease-in-out infinite;
+}
