@@ -30,6 +30,29 @@ type RouteState = { kind: 'home' } | { kind: 'scan'; id: string };
 
 const loadingStages = ['Reading message', 'Checking sources', 'Scoring credibility'];
 
+const examplePool: { single: string; batch: string }[] = [
+  {
+    single: 'Hot water cures all viruses. Share immediately!',
+    batch: 'Hot water cures all viruses. Share immediately!\nISRO launches a new satellite to monitor climate change.',
+  },
+  {
+    single: 'Scientists confirm coffee cures all diseases, share immediately!',
+    batch: 'Scientists confirm coffee cures all diseases, share immediately!\nWHO releases updated guidance on seasonal flu vaccines.',
+  },
+  {
+    single: 'They don\'t want you to know this one secret trick that cures diabetes overnight!',
+    batch: 'They don\'t want you to know this one secret trick that cures diabetes overnight!\nLocal city council approves new public park budget for next year.',
+  },
+  {
+    single: 'BREAKING: Government secretly adds mind-control chemicals to drinking water!!!',
+    batch: 'BREAKING: Government secretly adds mind-control chemicals to drinking water!!!\nNew bridge construction project completes ahead of schedule.',
+  },
+  {
+    single: 'Eating this common fruit seed kills cancer cells instantly, doctors are furious!',
+    batch: 'Eating this common fruit seed kills cancer cells instantly, doctors are furious!\nUniversity researchers publish peer-reviewed study on sleep patterns.',
+  },
+];
+
 function detectRoute(): RouteState {
   const match = window.location.pathname.match(/^\/scan\/([^/]+)$/i);
   if (match?.[1]) {
@@ -97,6 +120,7 @@ function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement>(null);
   const [footerVisible, setFooterVisible] = useState(false);
+  const lastExampleIndex = useRef<number | null>(null);
 
   const loadingMessage = loadingStages[loadingStage % loadingStages.length];
 
@@ -536,8 +560,14 @@ function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        setSingleInput('Hot water cures all viruses. Share immediately!');
-                        setBatchInput('Hot water cures all viruses. Share immediately!\nISRO launches a new satellite to monitor climate change.');
+                        let nextIndex = Math.floor(Math.random() * examplePool.length);
+                        if (examplePool.length > 1 && nextIndex === lastExampleIndex.current) {
+                          nextIndex = (nextIndex + 1) % examplePool.length;
+                        }
+                        lastExampleIndex.current = nextIndex;
+                        const example = examplePool[nextIndex];
+                        setSingleInput(example.single);
+                        setBatchInput(example.batch);
                         setError(null);
                       }}
                       className="inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"

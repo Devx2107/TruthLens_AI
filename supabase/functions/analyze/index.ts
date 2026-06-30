@@ -143,6 +143,35 @@ function toUrl(raw: string) {
   return value;
 }
 
+function removeNoiseSections(html: string) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
+    .replace(/<header[\s\S]*?<\/header>/gi, " ")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
+    .replace(/<aside[\s\S]*?<\/aside>/gi, " ")
+    .replace(/<form[\s\S]*?<\/form>/gi, " ")
+    .replace(/<!DOCTYPE[\s\S]*?>/gi, " ");
+}
+
+function extractMainContent(html: string) {
+  const cleaned = removeNoiseSections(html);
+
+  const articleMatch = cleaned.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+  if (articleMatch?.[1]) {
+    return articleMatch[1];
+  }
+
+  const mainMatch = cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
+  if (mainMatch?.[1]) {
+    return mainMatch[1];
+  }
+
+  return cleaned;
+}
+
 function stripHtml(html: string) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -194,7 +223,8 @@ async function fetchUrlContext(url: string) {
     const html = await response.text();
     const sourceTitle = extractTitle(html) ?? extractMeta(html, "og:title");
     const sourceDescription = extractMeta(html, "description") ?? extractMeta(html, "og:description");
-    const text = stripHtml(html).slice(0, 16000);
+    const mainContent = extractMainContent(html);
+    const text = stripHtml(mainContent).slice(0, 6000);
 
     return {
       sourceTitle,
@@ -248,7 +278,7 @@ function safeParseJson(text: string) {
   return JSON.parse(cleaned);
 }
 
-function scoreTextHeuristically(text: string) {
+function scoreTextHeuristically(text: string, reason?: string) {
   const lower = text.toLowerCase();
   const sensationalPhrases = [
     "share immediately",
@@ -304,7 +334,7 @@ function scoreTextHeuristically(text: string) {
     summary: "Heuristic fallback analysis was used because the live Gemini path was unavailable.",
     explanation:
       "This local fallback keeps the app usable during setup, but the best results come from the Supabase Edge Function calling Gemini.",
-    warnings: ["Configure Supabase and Gemini secrets to enable the full AI analysis path."],
+    warnings: [reason ? `Gemini analysis failed: ${reason}` : "Configure Supabase and Gemini secrets to enable the full AI analysis path."],
   } satisfies GeminiResponse;
 }
 
@@ -572,9 +602,10 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
 
     analysis = normalizeGeminiResult(await callGemini(prompt, geminiApiKey));
   } catch (error) {
-    console.warn("Gemini unavailable, using heuristic fallback:", error instanceof Error ? error.message : error);
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn("Gemini unavailable, using heuristic fallback:", reason);
     engine = "heuristic";
-    analysis = scoreTextHeuristically(prepared.sourceExcerpt);
+    analysis = scoreTextHeuristically(prepared.sourceExcerpt, reason);
   }
 
   const envelope: AnalysisEnvelope = {
