@@ -1,0 +1,16 @@
+import type { AnalysisResult } from '../types';
+
+export default function Dashboard({ history, onClear }: { history: AnalysisResult[]; onClear: () => void }) {
+  const week = Date.now() - 7 * 86400000;
+  const recent = history.filter((scan) => +new Date(scan.createdAt) >= week);
+  const average = history.length ? Math.round(history.reduce((sum, scan) => sum + scan.credibilityScore, 0) / history.length) : 0;
+  const risks = ['Low', 'Medium', 'High'].map((risk) => ({ risk, count: history.filter((scan) => scan.riskLevel === risk).length }));
+  const techniques = Object.entries(history.flatMap((scan) => scan.manipulationTechniques).reduce<Record<string, number>>((all, item) => ({ ...all, [item]: (all[item] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const points = history.slice(0, 14).reverse();
+  return <details className="glass-panel rounded-[2rem] p-5 sm:p-6"><summary className="cursor-pointer list-none text-xl font-bold text-white">Dashboard <span className="ml-2 text-sm font-normal text-slate-400">History analytics</span></summary>
+    <div className="mt-5 grid gap-3 sm:grid-cols-3"><div className="rounded-2xl bg-white/5 p-4"><p className="text-xs text-slate-400">This week</p><p className="mt-1 text-3xl font-black text-cyan-200">{recent.length}</p></div><div className="rounded-2xl bg-white/5 p-4"><p className="text-xs text-slate-400">All-time scans</p><p className="mt-1 text-3xl font-black text-cyan-200">{history.length}</p></div><div className="rounded-2xl bg-white/5 p-4"><p className="text-xs text-slate-400">Average credibility</p><p className="mt-1 text-3xl font-black text-cyan-200">{average}/100</p></div></div>
+    <div className="mt-5 grid gap-5 lg:grid-cols-2"><div><p className="mb-2 text-sm font-semibold text-white">Risk distribution</p>{risks.map(({ risk, count }) => <div key={risk} className="mb-2"><div className="flex justify-between text-xs text-slate-400"><span>{risk}</span><span>{count}</span></div><div className="mt-1 h-2 rounded-full bg-white/10"><div className={`h-full rounded-full ${risk === 'Low' ? 'bg-emerald-400' : risk === 'Medium' ? 'bg-amber-400' : 'bg-rose-400'}`} style={{ width: `${history.length ? count / history.length * 100 : 0}%` }} /></div></div>)}</div><div><p className="mb-2 text-sm font-semibold text-white">Last 14 scans</p><div className="flex h-28 items-end gap-1 rounded-2xl bg-white/5 p-3">{points.map((scan) => <div key={scan.id} title={`${scan.credibilityScore}/100`} className={`flex-1 rounded-t ${scan.riskLevel === 'Low' ? 'bg-emerald-400' : scan.riskLevel === 'Medium' ? 'bg-amber-400' : 'bg-rose-400'}`} style={{ height: `${Math.max(8, scan.credibilityScore)}%` }} />)}</div></div></div>
+    {techniques.length > 0 && <p className="mt-5 text-sm text-slate-300">Common signals: {techniques.map(([name, count]) => `${name} (${count})`).join(' · ')}</p>}
+    <button type="button" onClick={onClear} className="mt-5 rounded-full border border-rose-400/20 px-3 py-2 text-xs font-semibold text-rose-200">Clear history</button>
+  </details>;
+}

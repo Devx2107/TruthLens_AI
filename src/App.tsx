@@ -19,6 +19,8 @@ import {
   User,
 } from 'lucide-react';
 import ResultCard from './components/ResultCard';
+import Dashboard from './components/Dashboard';
+import PolicyPage from './components/PolicyPage';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
 import { analyzeRequest, fetchPublicScan, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
@@ -26,7 +28,7 @@ import { supabase, hasSupabaseConfig } from './lib/supabase';
 
 void React;
 
-type RouteState = { kind: 'home' } | { kind: 'scan'; id: string };
+type RouteState = { kind: 'home' } | { kind: 'scan'; id: string } | { kind: 'privacy' } | { kind: 'terms' };
 
 const loadingStages = ['Reading message', 'Checking sources', 'Scoring credibility'];
 
@@ -54,6 +56,8 @@ const examplePool: { single: string; batch: string }[] = [
 ];
 
 function detectRoute(): RouteState {
+  if (window.location.pathname === '/privacy') return { kind: 'privacy' };
+  if (window.location.pathname === '/terms') return { kind: 'terms' };
   const match = window.location.pathname.match(/^\/scan\/([^/]+)$/i);
   if (match?.[1]) {
     return { kind: 'scan', id: decodeURIComponent(match[1]) };
@@ -105,7 +109,11 @@ function App() {
   const [mode, setMode] = useState<AnalysisMode>('single');
   const [inputKind, setInputKind] = useState<InputKind>('text');
   const [singleInput, setSingleInput] = useState('');
+  const [compareInput, setCompareInput] = useState('');
+  const [compareResult, setCompareResult] = useState<AnalysisResult | null>(null);
   const [batchInput, setBatchInput] = useState('');
+  const [imageData, setImageData] = useState('');
+  const [imageMimeType, setImageMimeType] = useState('image/jpeg');
   const [loading, setLoading] = useState(false);
   const [loadingStage, setLoadingStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -262,7 +270,11 @@ function App() {
       return;
     }
 
-    if (mode !== 'batch' && singleValue.length === 0) {
+    if (mode === 'compare' && compareInput.trim().length === 0) {
+      setError('Add a second claim to compare.');
+      return;
+    }
+    if (mode !== 'batch' && inputKind !== 'image' && singleValue.length === 0) {
       setError(inputKind === 'url' ? 'Paste a link first.' : 'Paste a message or headline first.');
       return;
     }
@@ -270,6 +282,7 @@ function App() {
     setLoading(true);
     setLoadingStage(0);
     setResult(null);
+    setCompareResult(null);
     setBatchResults([]);
 
     const interval = window.setInterval(() => {
@@ -277,7 +290,10 @@ function App() {
     }, 1300);
 
     try {
-      const response = await analyzeRequest(
+      const response = mode === 'compare' ? await Promise.all([
+        analyzeRequest({ mode: 'single', input: singleValue, inputType: inputKind }),
+        analyzeRequest({ mode: 'single', input: compareInput.trim(), inputType: 'text' }),
+      ]) : await analyzeRequest(
         mode === 'batch'
           ? {
               mode: 'batch',
@@ -288,12 +304,17 @@ function App() {
             }
           : {
               mode: 'single',
-              input: singleValue,
+              input: inputKind === 'image' ? '[Image input]' : singleValue,
               inputType: inputKind,
+              ...(inputKind === 'image' ? { imageData, mimeType: imageMimeType } : {}),
             },
       );
 
-      if ('results' in response) {
+      if (Array.isArray(response)) {
+        const left = 'results' in response[0] ? response[0].results[0] : response[0];
+        const right = 'results' in response[1] ? response[1].results[0] : response[1];
+        if (left && right) { setResult(left); setCompareResult(right); await Promise.all([persistScan(left), persistScan(right)]); }
+      } else if ('results' in response) {
         setBatchResults(response.results);
         await Promise.all(response.results.map((scan) => persistScan(scan)));
         setResult(response.results[0] ?? null);
@@ -349,6 +370,27 @@ function App() {
 
     await supabase.auth.signOut();
     setSession(null);
+  };
+
+  const setInternalRoute = (kind: 'home' | 'privacy' | 'terms') => {
+    window.history.pushState({}, '', kind === 'home' ? '/' : `/${kind}`);
+    setRoute({ kind });
+  };
+
+  const readImage = (file: File) => {
+    setImageMimeType(file.type || 'image/jpeg');
+    const reader = new FileReader();
+    reader.onload = () => setImageData(String(reader.result));
+    reader.readAsDataURL(file);
+  };
+
+  const pasteImage = async () => {
+    try {
+      const items = await navigator.clipboard.read();
+      const item = items.find((entry) => entry.types.some((type) => type.startsWith('image/')));
+      const type = item?.types.find((value) => value.startsWith('image/'));
+      if (item && type) readImage(new File([await item.getType(type)], 'clipboard.png', { type }));
+    } catch { setError('Clipboard image access is unavailable. Choose an image file instead.'); }
   };
 
   return (
@@ -475,13 +517,14 @@ function App() {
 
         <main className="flex flex-1 flex-col gap-6">
           <section className="space-y-6">
-            {route.kind === 'scan' ? (
+            {route.kind === 'privacy' || route.kind === 'terms' ? (
+              <PolicyPage title={route.kind === 'privacy' ? 'Privacy Policy' : 'Terms of Use'} onBack={() => setInternalRoute('home')} content={route.kind === 'privacy' ? ['TruthLens processes the text, URLs, and images you submit to provide an analysis. Signed-in users may also have an email address and scan history stored in Supabase.', 'We do not sell or share your personal information. Guest history stays in your browser; synced history is stored with Supabase. To request deletion, sign out and contact hello@truthlens.ai.'] : ['TruthLens is an AI-assisted information analysis tool. Results can be wrong and are not legal, medical, financial, or professional advice.', 'Use the service fairly and verify important claims with reliable sources. You are responsible for decisions made using the service.']} />
+            ) : route.kind === 'scan' ? (
               <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
                 <button
                   type="button"
                   onClick={() => {
-                    window.history.pushState({}, '', '/');
-                    setRoute({ kind: 'home' });
+                    setInternalRoute('home');
                   }}
                   className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white/10 hover:text-white dark:text-slate-200"
                 >
@@ -512,19 +555,21 @@ function App() {
                   <div className="flex flex-wrap gap-2">
                     <ModeButton active={mode === 'single'} icon={<TextCursorInput className="h-4 w-4" />} label="Single" onClick={() => setMode('single')} />
                     <ModeButton active={mode === 'batch'} icon={<Plus className="h-4 w-4" />} label="Batch" onClick={() => setMode('batch')} />
+                    <ModeButton active={mode === 'compare'} icon={<Link2 className="h-4 w-4" />} label="Compare" onClick={() => setMode('compare')} />
                   </div>
 
                   <div className="mt-4 flex flex-wrap gap-2">
                     <ModeButton active={inputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text input" onClick={() => setInputKind('text')} />
                     <ModeButton active={inputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL input" onClick={() => setInputKind('url')} />
+                    {mode !== 'batch' && <ModeButton active={inputKind === 'image'} icon={<Upload className="h-4 w-4" />} label="Image" onClick={() => setInputKind('image')} />}
                   </div>
 
                   <div className="mt-5 space-y-3">
                     <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">
-                      {mode === 'batch' ? 'Paste one headline or URL per line' : inputKind === 'url' ? 'Paste a link to scan' : 'Paste a message or headline'}
+                      {mode === 'batch' ? 'Paste one headline or URL per line' : inputKind === 'url' ? 'Paste a link to scan' : inputKind === 'image' ? 'Upload or paste a screenshot' : 'Paste a message or headline'}
                     </label>
 
-                    {mode === 'batch' ? (
+                    {mode === 'compare' ? <div className="grid gap-3 md:grid-cols-2"><textarea value={singleInput} onChange={(event) => setSingleInput(event.target.value)} placeholder="First claim" className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none" disabled={loading} /><textarea value={compareInput} onChange={(event) => setCompareInput(event.target.value)} placeholder="Second claim" className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none" disabled={loading} /></div> : mode === 'batch' ? (
                       <textarea
                         value={batchInput}
                         onChange={(event) => setBatchInput(event.target.value)}
@@ -532,6 +577,12 @@ function App() {
                         className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/20"
                         disabled={loading}
                       />
+                    ) : inputKind === 'image' ? (
+                      <div className="rounded-[1.5rem] border border-dashed border-cyan-400/30 bg-slate-950/30 p-5 text-center">
+                        <input type="file" accept="image/*" onChange={(event) => event.target.files?.[0] && readImage(event.target.files[0])} disabled={loading} className="block w-full text-sm text-slate-300" />
+                        <button type="button" onClick={() => void pasteImage()} className="mt-3 rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-white"><Upload className="mr-2 inline h-4 w-4" />Paste from clipboard</button>
+                        {imageData && <img src={imageData} alt="Selected preview" className="mx-auto mt-4 max-h-48 rounded-2xl" />}
+                      </div>
                     ) : (
                       <textarea
                         value={singleInput}
@@ -585,6 +636,7 @@ function App() {
                 </form>
 
                 {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} />}
+                {compareResult && <ResultCard result={compareResult} onCopyLink={copyShareLink} />}
 
                 {batchResults.length > 0 && mode === 'batch' && (
                   <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
@@ -678,6 +730,8 @@ function App() {
                 <li>Public scan pages use `/scan/:id` when a scan has been saved.</li>
               </ul>
             </section>
+
+            <Dashboard history={history} onClear={() => { if (window.confirm('Clear all local scan history?')) { saveLocalHistory([]); setHistory([]); } }} />
         </main>
 
         <footer
@@ -692,10 +746,10 @@ function App() {
             </div>
 
             <nav className="flex flex-wrap items-center gap-4">
-              <a href="/privacy" className="transition hover:text-white">
+              <a href="/privacy" onClick={(event) => { event.preventDefault(); setInternalRoute('privacy'); }} className="transition hover:text-white">
                 Privacy Policy
               </a>
-              <a href="/terms" className="transition hover:text-white">
+              <a href="/terms" onClick={(event) => { event.preventDefault(); setInternalRoute('terms'); }} className="transition hover:text-white">
                 Terms
               </a>
               <a href="mailto:hello@truthlens.ai" className="transition hover:text-white">

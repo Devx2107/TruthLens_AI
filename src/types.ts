@@ -1,5 +1,5 @@
-export type InputKind = 'text' | 'url';
-export type AnalysisMode = 'single' | 'batch';
+export type InputKind = 'text' | 'url' | 'image';
+export type AnalysisMode = 'single' | 'batch' | 'compare';
 export type RiskLevel = 'Low' | 'Medium' | 'High';
 export type AnalysisEngine = 'gemini' | 'heuristic';
 
@@ -49,6 +49,13 @@ export interface AnalyzeRequest {
   items?: AnalyzeItem[];
   message?: string;
   url?: string;
+  imageData?: string;
+  mimeType?: string;
+}
+
+export interface ComparisonResult {
+  left: AnalysisResult;
+  right: AnalysisResult;
 }
 
 export interface SessionSnapshot {

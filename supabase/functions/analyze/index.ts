@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-type InputKind = "text" | "url";
+type InputKind = "text" | "url" | "image";
 type RiskLevel = "Low" | "Medium" | "High";
 
 interface AnalyzeItem {
@@ -15,6 +15,8 @@ interface AnalyzeRequest {
   message?: string;
   url?: string;
   items?: AnalyzeItem[];
+  imageData?: string;
+  mimeType?: string;
 }
 
 interface ClaimAnalysis {
@@ -372,6 +374,20 @@ async function callGemini(prompt: string, geminiApiKey: string) {
   return safeParseJson(generatedText) as GeminiResponse;
 }
 
+async function callGeminiVision(prompt: string, imageData: string, mimeType: string, geminiApiKey: string) {
+  const model = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.5-flash";
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
+    body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mimeType, data: imageData.replace(/^data:[^;]+;base64,/, "") } }, { text: prompt }] }], generationConfig: { maxOutputTokens: 1200, responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA } }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const data = await response.json();
+  const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!generatedText) throw new Error("No response from Gemini Vision");
+  return safeParseJson(generatedText) as GeminiResponse;
+}
+
 function normalizeGeminiResult(value: GeminiResponse): GeminiResponse {
   const claims = Array.isArray(value.claims) ? value.claims : [];
 
@@ -551,7 +567,7 @@ async function rateLimitScope(scopeKey: string) {
   return Boolean(row?.allowed ?? true);
 }
 
-async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
+async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageData?: string, mimeType = "image/jpeg") {
   const input = normalizeInput(rawInput);
   const inputType = inferInputKind(input, explicitKind);
   const sourceUrl = inputType === "url" ? toUrl(input) : null;
@@ -561,7 +577,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
     inputKind: inputType,
     sourceTitle: null as string | null,
     sourceDescription: null as string | null,
-    sourceExcerpt: input,
+    sourceExcerpt: inputType === "image" ? "[Image input — content extracted by Gemini Vision]" : input,
   };
 
   if (sourceUrl) {
@@ -571,7 +587,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
     prepared.sourceExcerpt = context.sourceExcerpt || input;
   }
 
-  const cacheKey = await hashValue(`${inputType}:${sourceUrl ?? ""}:${input}`);
+  const cacheKey = await hashValue(`${inputType}:${sourceUrl ?? ""}:${input}:${imageData ?? ""}`);
   const cached = await readCachedAnalysis(cacheKey);
   if (cached) {
     return { ...cached, fromCache: true };
@@ -600,7 +616,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
       throw new Error("Gemini API key not configured");
     }
 
-    analysis = normalizeGeminiResult(await callGemini(prompt, geminiApiKey));
+    analysis = normalizeGeminiResult(inputType === "image" && imageData ? await callGeminiVision(prompt, imageData, mimeType, geminiApiKey) : await callGemini(prompt, geminiApiKey));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     console.warn("Gemini unavailable, using heuristic fallback:", reason);
@@ -658,12 +674,12 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ mode: "batch", results } satisfies BatchResponse);
     }
 
-    const rawInput = normalizeInput(payload.input ?? payload.message ?? payload.url ?? "");
-    if (!rawInput) {
+    const rawInput = normalizeInput(payload.input ?? payload.message ?? payload.url ?? (payload.inputType === "image" ? "[Image input]" : ""));
+    if (!rawInput || (payload.inputType === "image" && !payload.imageData)) {
       return jsonResponse({ error: "Message or URL is required" }, 400);
     }
 
-    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput));
+    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput), payload.imageData, payload.mimeType);
     return jsonResponse(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";

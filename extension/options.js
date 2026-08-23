@@ -1,0 +1,1 @@
+const key = document.querySelector('#key'); const status = document.querySelector('#status'); chrome.storage.sync.get(['anonKey'], ({ anonKey }) => { key.value = anonKey || ''; }); document.querySelector('#save').onclick = () => { chrome.storage.sync.set({ anonKey: key.value.trim() }, () => { status.textContent = 'Saved.'; }); };

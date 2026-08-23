@@ -1,0 +1,3 @@
+const status = document.querySelector('#status'); const result = document.querySelector('#result');
+chrome.storage.sync.get(['pendingText'], ({ pendingText }) => { if (pendingText) status.textContent = pendingText; });
+document.querySelector('#check').onclick = async () => { const text = status.textContent; if (!text || text.startsWith('Select text')) return; status.textContent = 'Analyzing…'; const response = await chrome.runtime.sendMessage({ type: 'analyze', text }); result.textContent = response.error || `${response.credibilityScore}/100 — ${response.riskLevel}\n${response.summary || ''}`; };

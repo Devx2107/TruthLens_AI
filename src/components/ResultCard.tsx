@@ -1,8 +1,8 @@
 import React from 'react';
-import { AlertCircle, AlertTriangle, CheckCircle2, Info, Link2, ShieldCheck, Sparkles } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, Copy, Info, Link2, ShieldCheck, Sparkles } from 'lucide-react';
 import type { AnalysisResult } from '../types';
 import CredibilityMeter from './CredibilityMeter';
-import { downloadShareCard } from '../lib/share';
+import { copyShareCardImage, downloadShareCardPng } from '../lib/share';
 
 void React;
 
@@ -61,11 +61,14 @@ export default function ResultCard({ result, onCopyLink }: ResultCardProps) {
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => downloadShareCard(result)}
+            onClick={() => void downloadShareCardPng(result)}
             className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 transition hover:-translate-y-0.5 hover:bg-white/15 dark:text-white"
           >
             <ShieldCheck className="h-4 w-4" />
-            Download card
+            Download PNG
+          </button>
+          <button type="button" onClick={() => void copyShareCardImage(result)} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white">
+            <Copy className="h-4 w-4" /> Copy share image
           </button>
           {onCopyLink && (
             <button
