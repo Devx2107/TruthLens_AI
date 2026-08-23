@@ -21,6 +21,7 @@ import {
 import ResultCard from './components/ResultCard';
 import Dashboard from './components/Dashboard';
 import PolicyPage from './components/PolicyPage';
+import CompareView from './components/CompareView';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
 import { analyzeRequest, fetchPublicScan, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
@@ -110,6 +111,7 @@ function App() {
   const [inputKind, setInputKind] = useState<InputKind>('text');
   const [singleInput, setSingleInput] = useState('');
   const [compareInput, setCompareInput] = useState('');
+  const [compareInputKind, setCompareInputKind] = useState<InputKind>('text');
   const [compareResult, setCompareResult] = useState<AnalysisResult | null>(null);
   const [batchInput, setBatchInput] = useState('');
   const [imageData, setImageData] = useState('');
@@ -274,6 +276,10 @@ function App() {
       setError('Add a second claim to compare.');
       return;
     }
+    if (inputKind === 'image' && !imageData) {
+      setError('Choose or paste an image first.');
+      return;
+    }
     if (mode !== 'batch' && inputKind !== 'image' && singleValue.length === 0) {
       setError(inputKind === 'url' ? 'Paste a link first.' : 'Paste a message or headline first.');
       return;
@@ -292,7 +298,7 @@ function App() {
     try {
       const response = mode === 'compare' ? await Promise.all([
         analyzeRequest({ mode: 'single', input: singleValue, inputType: inputKind }),
-        analyzeRequest({ mode: 'single', input: compareInput.trim(), inputType: 'text' }),
+        analyzeRequest({ mode: 'single', input: compareInput.trim(), inputType: compareInputKind }),
       ]) : await analyzeRequest(
         mode === 'batch'
           ? {
@@ -394,7 +400,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#081122_45%,_#0b1324_100%)] text-slate-100">
+    <div className={`min-h-screen overflow-hidden text-slate-100 ${theme === 'dark' ? 'bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#081122_45%,_#0b1324_100%)]' : 'bg-[radial-gradient(circle_at_top,_rgba(125,211,252,0.28),_transparent_32%),linear-gradient(180deg,_#f8fafc_0%,_#e0f2fe_55%,_#eef2ff_100%)]'}`}>
       <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] bg-[size:28px_28px] opacity-30" />
 
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -569,7 +575,7 @@ function App() {
                       {mode === 'batch' ? 'Paste one headline or URL per line' : inputKind === 'url' ? 'Paste a link to scan' : inputKind === 'image' ? 'Upload or paste a screenshot' : 'Paste a message or headline'}
                     </label>
 
-                    {mode === 'compare' ? <div className="grid gap-3 md:grid-cols-2"><textarea value={singleInput} onChange={(event) => setSingleInput(event.target.value)} placeholder="First claim" className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none" disabled={loading} /><textarea value={compareInput} onChange={(event) => setCompareInput(event.target.value)} placeholder="Second claim" className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none" disabled={loading} /></div> : mode === 'batch' ? (
+                    {mode === 'compare' ? <div className="grid gap-3 md:grid-cols-2"><div><div className="mb-2 flex gap-2"><ModeButton active={inputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text" onClick={() => setInputKind('text')} /><ModeButton active={inputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL" onClick={() => setInputKind('url')} /></div><textarea value={singleInput} onChange={(event) => setSingleInput(event.target.value)} placeholder="First claim" className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none" disabled={loading} /></div><div><div className="mb-2 flex gap-2"><ModeButton active={compareInputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text" onClick={() => setCompareInputKind('text')} /><ModeButton active={compareInputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL" onClick={() => setCompareInputKind('url')} /></div><textarea value={compareInput} onChange={(event) => setCompareInput(event.target.value)} placeholder="Second claim" className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none" disabled={loading} /></div></div> : mode === 'batch' ? (
                       <textarea
                         value={batchInput}
                         onChange={(event) => setBatchInput(event.target.value)}
@@ -636,7 +642,7 @@ function App() {
                 </form>
 
                 {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} />}
-                {compareResult && <ResultCard result={compareResult} onCopyLink={copyShareLink} />}
+                {compareResult && mode === 'compare' && currentResult && <CompareView left={currentResult} right={compareResult} />}
 
                 {batchResults.length > 0 && mode === 'batch' && (
                   <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
