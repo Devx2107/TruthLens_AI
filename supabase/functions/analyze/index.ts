@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 type InputKind = "text" | "url";
 type RiskLevel = "Low" | "Medium" | "High";
+type SourceCredibilityLabel = "Established publisher" | "Limited signal" | "Caution signal";
 
 interface AnalyzeItem {
   input: string;
@@ -44,6 +45,12 @@ interface AnalysisEnvelope extends GeminiResponse {
   sourceTitle: string | null;
   sourceDescription: string | null;
   sourceExcerpt: string;
+  sourceCredibility?: {
+    domain: string;
+    score: number;
+    label: SourceCredibilityLabel;
+    rationale: string;
+  };
   engine: "gemini" | "heuristic";
   createdAt: string;
   fromCache: boolean;
@@ -141,6 +148,31 @@ function toUrl(raw: string) {
   if (/^https?:\/\//i.test(value)) return value;
   if (/^www\./i.test(value)) return `https://${value}`;
   return value;
+}
+
+const DOMAIN_SIGNALS: Record<string, { score: number; label: SourceCredibilityLabel; rationale: string }> = {
+  "apnews.com": { score: 92, label: "Established publisher", rationale: "Associated with an established wire-service newsroom." },
+  "bbc.com": { score: 90, label: "Established publisher", rationale: "Associated with an established public-service newsroom." },
+  "npr.org": { score: 90, label: "Established publisher", rationale: "Associated with an established public-media newsroom." },
+  "pbs.org": { score: 90, label: "Established publisher", rationale: "Associated with an established public-media newsroom." },
+  "reuters.com": { score: 94, label: "Established publisher", rationale: "Associated with an established international wire service." },
+  "theguardian.com": { score: 84, label: "Established publisher", rationale: "Associated with an established newspaper newsroom." },
+  "nytimes.com": { score: 86, label: "Established publisher", rationale: "Associated with an established newspaper newsroom." },
+  "washingtonpost.com": { score: 86, label: "Established publisher", rationale: "Associated with an established newspaper newsroom." },
+  "infowars.com": { score: 12, label: "Caution signal", rationale: "This domain has a strong history of publishing unreliable or sensational claims." },
+  "naturalnews.com": { score: 15, label: "Caution signal", rationale: "This domain has a strong history of publishing unsupported health claims." },
+  "beforeitsnews.com": { score: 15, label: "Caution signal", rationale: "This domain is associated with user-published and frequently unreliable claims." },
+};
+
+function domainSignal(url: string) {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    const exact = DOMAIN_SIGNALS[hostname];
+    const signal = exact ?? { score: 50, label: "Limited signal" as const, rationale: "No configured reputation signal exists for this domain." };
+    return { domain: hostname, ...signal };
+  } catch {
+    return null;
+  }
 }
 
 function removeNoiseSections(html: string) {
@@ -525,7 +557,7 @@ async function rateLimitScope(scopeKey: string) {
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
   if (!supabaseUrl || !serviceRoleKey) {
-    return true;
+    return { allowed: true, resetAt: null as string | null };
   }
 
   const response = await fetch(`${supabaseUrl}/rest/v1/rpc/check_analysis_rate_limit`, {
@@ -543,18 +575,19 @@ async function rateLimitScope(scopeKey: string) {
   });
 
   if (!response.ok) {
-    return true;
+    return { allowed: true, resetAt: null as string | null };
   }
 
   const payload = await response.json();
   const row = Array.isArray(payload) ? payload[0] : payload;
-  return Boolean(row?.allowed ?? true);
+  return { allowed: Boolean(row?.allowed ?? true), resetAt: row?.reset_at ?? null };
 }
 
 async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
   const input = normalizeInput(rawInput);
   const inputType = inferInputKind(input, explicitKind);
   const sourceUrl = inputType === "url" ? toUrl(input) : null;
+  const sourceCredibility = sourceUrl ? domainSignal(sourceUrl) : null;
 
   const prepared = {
     input,
@@ -578,9 +611,13 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
   }
 
   const scopeKey = await hashValue(`truthlens:${inputType}:${sourceUrl ?? input}`);
-  const allowed = await rateLimitScope(scopeKey);
-  if (!allowed) {
-    throw new Error("Rate limit exceeded. Please try again in a few minutes.");
+  const rateLimit = await rateLimitScope(scopeKey);
+  if (!rateLimit.allowed) {
+    const resetAt = rateLimit.resetAt ? Date.parse(rateLimit.resetAt) : Date.now() + 300000;
+    const retryAfterSeconds = Math.max(1, Math.ceil((resetAt - Date.now()) / 1000));
+    const error = new Error("Rate limit exceeded. Please try again when the window resets.");
+    Object.assign(error, { retryAfterSeconds });
+    throw error;
   }
 
   const prompt = buildPrompt({
@@ -608,6 +645,19 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
     analysis = scoreTextHeuristically(prepared.sourceExcerpt, reason);
   }
 
+  if (sourceCredibility) {
+    const blendedScore = clamp(Math.round(analysis.credibilityScore * 0.8 + sourceCredibility.score * 0.2), 0, 100);
+    analysis = {
+      ...analysis,
+      credibilityScore: blendedScore,
+      riskLevel: blendedScore >= 70 ? "Low" : blendedScore >= 45 ? "Medium" : "High",
+      warnings: [
+        ...analysis.warnings,
+        `Publisher signal: ${sourceCredibility.label}. This is a domain-level heuristic, not proof that the article is true or false.`,
+      ],
+    };
+  }
+
   const envelope: AnalysisEnvelope = {
     id: crypto.randomUUID(),
     input,
@@ -616,6 +666,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
     sourceTitle: prepared.sourceTitle,
     sourceDescription: prepared.sourceDescription,
     sourceExcerpt: prepared.sourceExcerpt,
+    ...(sourceCredibility ? { sourceCredibility } : {}),
     engine,
     fromCache: false,
     createdAt: new Date().toISOString(),
@@ -668,6 +719,9 @@ Deno.serve(async (req: Request) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";
     console.error("Error in analyze function:", error);
-    return jsonResponse({ error: message }, message.includes("Rate limit") ? 429 : 500);
+    const retryAfterSeconds = typeof error === "object" && error !== null && "retryAfterSeconds" in error
+      ? Number((error as { retryAfterSeconds: number }).retryAfterSeconds)
+      : undefined;
+    return jsonResponse({ error: message, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) }, message.includes("Rate limit") ? 429 : 500);
   }
 });

@@ -132,6 +132,17 @@ export default function ResultCard({ result, onCopyLink }: ResultCardProps) {
                   {result.sourceTitle || result.sourceUrl || 'Local demo'}
                 </dd>
               </div>
+              {result.sourceCredibility && (
+                <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="text-slate-500 dark:text-slate-400">Publisher signal</dt>
+                    <dd className="font-semibold text-cyan-700 dark:text-cyan-200">{result.sourceCredibility.label}</dd>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    {result.sourceCredibility.domain} · {result.sourceCredibility.score}/100. {result.sourceCredibility.rationale}
+                  </p>
+                </div>
+              )}
               <div className="flex items-start justify-between gap-4">
                 <dt className="text-slate-500 dark:text-slate-400">Scanned</dt>
                 <dd className="font-medium text-slate-700 dark:text-slate-200">

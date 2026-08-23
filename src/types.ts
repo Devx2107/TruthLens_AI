@@ -3,6 +3,13 @@ export type AnalysisMode = 'single' | 'batch';
 export type RiskLevel = 'Low' | 'Medium' | 'High';
 export type AnalysisEngine = 'gemini' | 'heuristic';
 
+export interface SourceCredibility {
+  domain: string;
+  score: number;
+  label: 'Established publisher' | 'Limited signal' | 'Caution signal';
+  rationale: string;
+}
+
 export interface ClaimAnalysis {
   claim: string;
   score: number;
@@ -19,6 +26,7 @@ export interface AnalysisResult {
   sourceTitle: string | null;
   sourceDescription: string | null;
   sourceExcerpt: string;
+  sourceCredibility?: SourceCredibility;
   credibilityScore: number;
   confidence: number;
   riskLevel: RiskLevel;

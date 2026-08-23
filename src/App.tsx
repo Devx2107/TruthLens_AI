@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import ResultCard from './components/ResultCard';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
-import { analyzeRequest, fetchPublicScan, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
+import { AnalyzeRequestError, analyzeRequest, fetchPublicScan, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
 import { supabase, hasSupabaseConfig } from './lib/supabase';
 
@@ -109,6 +109,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [loadingStage, setLoadingStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [batchResults, setBatchResults] = useState<AnalysisResult[]>([]);
   const [history, setHistory] = useState<AnalysisResult[]>([]);
@@ -123,6 +124,14 @@ function App() {
   const lastExampleIndex = useRef<number | null>(null);
 
   const loadingMessage = loadingStages[loadingStage % loadingStages.length];
+
+  useEffect(() => {
+    if (retryAfterSeconds <= 0) return;
+    const timer = window.setInterval(() => {
+      setRetryAfterSeconds((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [retryAfterSeconds]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -250,6 +259,7 @@ function App() {
   const startAnalysis = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
+    setRetryAfterSeconds(0);
 
     const singleValue = singleInput.trim();
     const batchValues = batchInput
@@ -304,7 +314,12 @@ function App() {
         setRoute({ kind: 'scan', id: response.id });
       }
     } catch (analysisError) {
-      setError(analysisError instanceof Error ? analysisError.message : 'Unable to analyze the message. Please try again.');
+      if (analysisError instanceof AnalyzeRequestError && analysisError.status === 429) {
+        setRetryAfterSeconds(analysisError.retryAfterSeconds ?? 300);
+        setError('You have reached the scan limit for this window.');
+      } else {
+        setError(analysisError instanceof Error ? analysisError.message : 'Unable to analyze the message. Please try again.');
+      }
     } finally {
       window.clearInterval(interval);
       setLoading(false);
@@ -579,7 +594,12 @@ function App() {
 
                   {error && (
                     <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-                      {error}
+                      <p>{error}</p>
+                      {retryAfterSeconds > 0 && (
+                        <p className="mt-1 text-rose-100/80">
+                          Try again in {Math.floor(retryAfterSeconds / 60)}:{String(retryAfterSeconds % 60).padStart(2, '0')}.
+                        </p>
+                      )}
                     </div>
                   )}
                 </form>

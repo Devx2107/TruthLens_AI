@@ -1,6 +1,18 @@
 import type { AnalyzeRequest, AnalysisResult, BatchAnalysisResponse, ClaimAnalysis, InputKind } from '../types';
 import { hasSupabaseConfig, supabase } from './supabase';
 
+export class AnalyzeRequestError extends Error {
+  status: number;
+  retryAfterSeconds?: number;
+
+  constructor(message: string, status: number, retryAfterSeconds?: number) {
+    super(message);
+    this.name = 'AnalyzeRequestError';
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -105,7 +117,16 @@ async function postToEdgeFunction(payload: AnalyzeRequest) {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(errorText || 'Failed to analyze');
+    let message = errorText || 'Failed to analyze';
+    let retryAfterSeconds: number | undefined;
+    try {
+      const body = JSON.parse(errorText) as { error?: string; retryAfterSeconds?: number };
+      message = body.error || message;
+      retryAfterSeconds = body.retryAfterSeconds;
+    } catch {
+      // Keep the raw response for non-JSON errors.
+    }
+    throw new AnalyzeRequestError(message, response.status, retryAfterSeconds);
   }
 
   return response.json() as Promise<AnalysisResult | BatchAnalysisResponse>;
@@ -114,7 +135,11 @@ async function postToEdgeFunction(payload: AnalyzeRequest) {
 export async function analyzeRequest(payload: AnalyzeRequest): Promise<AnalysisResult | BatchAnalysisResponse> {
   try {
     return await postToEdgeFunction(payload);
-  } catch {
+  } catch (error) {
+    if (error instanceof AnalyzeRequestError && error.status === 429) {
+      throw error;
+    }
+
     if (payload.mode === 'batch' || Array.isArray(payload.items)) {
       const items = payload.items ?? [];
       return {
@@ -163,21 +188,9 @@ export async function saveAnalysisForUser(result: AnalysisResult, userId: string
     created_at: result.createdAt,
   };
 
-  const scanRow = {
-    scan_id: result.id,
-    user_id: userId,
-    input_kind: result.inputType,
-    input_text: result.input,
-    input_url: result.sourceUrl,
-    payload: result,
-    is_public: true,
-    created_at: result.createdAt,
-  };
-
-  await Promise.allSettled([
-    supabase.from('analysis_history').upsert(historyRow, { onConflict: 'scan_id' }),
-    supabase.from('scan_pages').upsert(scanRow, { onConflict: 'scan_id' }),
-  ]);
+  // Public scan pages are created by the Edge Function with the service role.
+  // Keep the client-side write scoped to the user's private history row.
+  await supabase.from('analysis_history').upsert(historyRow, { onConflict: 'scan_id' });
 }
 
 export async function loadUserHistory(userId: string) {
