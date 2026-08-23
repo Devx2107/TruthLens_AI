@@ -35,6 +35,7 @@ export interface AnalysisResult {
 export interface BatchAnalysisResponse {
   mode: 'batch';
   results: AnalysisResult[];
+  errors?: { input: string; message: string }[];
 }
 
 export interface AnalyzeItem {
@@ -51,6 +52,11 @@ export interface AnalyzeRequest {
   url?: string;
   imageData?: string;
   mimeType?: string;
+  forceRefresh?: boolean;
+}
+
+export interface UsageStats {
+  count: number;
 }
 
 export interface ComparisonResult {

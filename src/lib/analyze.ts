@@ -1,4 +1,4 @@
-import type { AnalyzeRequest, AnalysisResult, BatchAnalysisResponse, ClaimAnalysis, InputKind } from '../types';
+import type { AnalyzeRequest, AnalysisResult, BatchAnalysisResponse, ClaimAnalysis, InputKind, UsageStats } from '../types';
 import { hasSupabaseConfig, supabase } from './supabase';
 
 function clamp(value: number, min: number, max: number) {
@@ -105,7 +105,16 @@ async function postToEdgeFunction(payload: AnalyzeRequest) {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(errorText || 'Failed to analyze');
+    let message = errorText || 'Failed to analyze';
+    try {
+      const parsed = JSON.parse(errorText) as { error?: string };
+      message = parsed.error || message;
+    } catch {
+      // Preserve plain-text edge-function errors.
+    }
+    const error = new Error(message) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
 
   return response.json() as Promise<AnalysisResult | BatchAnalysisResponse>;
@@ -113,8 +122,9 @@ async function postToEdgeFunction(payload: AnalyzeRequest) {
 
 export async function analyzeRequest(payload: AnalyzeRequest): Promise<AnalysisResult | BatchAnalysisResponse> {
   try {
-    return await postToEdgeFunction(payload);
-  } catch {
+      return await postToEdgeFunction(payload);
+  } catch (error) {
+    if (error instanceof Error && (error as Error & { status?: number }).status === 429) throw error;
     if (payload.mode === 'batch' || Array.isArray(payload.items)) {
       const items = payload.items ?? [];
       return {
@@ -126,6 +136,20 @@ export async function analyzeRequest(payload: AnalyzeRequest): Promise<AnalysisR
     const text = normalizeText(payload.input ?? payload.message ?? payload.url ?? '');
     const kind = detectInputKind(text, payload.inputType);
     return localAnalyzeOne(text, kind);
+  }
+}
+
+export async function loadUsageCount(): Promise<number | null> {
+  if (!hasSupabaseConfig) return null;
+  try {
+    const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze`, {
+      headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
+    });
+    if (!response.ok) return null;
+    const payload = (await response.json()) as UsageStats;
+    return Number.isFinite(payload.count) ? payload.count : null;
+  } catch {
+    return null;
   }
 }
 

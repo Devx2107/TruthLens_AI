@@ -17,6 +17,7 @@ interface AnalyzeRequest {
   items?: AnalyzeItem[];
   imageData?: string;
   mimeType?: string;
+  forceRefresh?: boolean;
 }
 
 interface ClaimAnalysis {
@@ -54,6 +55,7 @@ interface AnalysisEnvelope extends GeminiResponse {
 interface BatchResponse {
   mode: "batch";
   results: AnalysisEnvelope[];
+  errors?: { input: string; message: string }[];
 }
 
 const corsHeaders = {
@@ -374,6 +376,17 @@ async function callGemini(prompt: string, geminiApiKey: string) {
   return safeParseJson(generatedText) as GeminiResponse;
 }
 
+async function countAnalyses() {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) return 0;
+  const response = await fetch(`${supabaseUrl}/rest/v1/analysis_history?select=id&limit=1`, {
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, Prefer: "count=exact" },
+  });
+  const range = response.headers.get("content-range");
+  return Number(range?.split("/")[1] ?? 0) || 0;
+}
+
 async function callGeminiVision(prompt: string, imageData: string, mimeType: string, geminiApiKey: string) {
   const model = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.5-flash";
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -541,7 +554,7 @@ async function rateLimitScope(scopeKey: string) {
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
   if (!supabaseUrl || !serviceRoleKey) {
-    return true;
+    return { allowed: true, resetAt: null as string | null };
   }
 
   const response = await fetch(`${supabaseUrl}/rest/v1/rpc/check_analysis_rate_limit`, {
@@ -559,15 +572,15 @@ async function rateLimitScope(scopeKey: string) {
   });
 
   if (!response.ok) {
-    return true;
+    return { allowed: true, resetAt: null as string | null };
   }
 
   const payload = await response.json();
   const row = Array.isArray(payload) ? payload[0] : payload;
-  return Boolean(row?.allowed ?? true);
+  return { allowed: Boolean(row?.allowed ?? true), resetAt: row?.reset_at ?? null };
 }
 
-async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageData?: string, mimeType = "image/jpeg") {
+async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageData?: string, mimeType = "image/jpeg", forceRefresh = false) {
   const input = normalizeInput(rawInput);
   const inputType = inferInputKind(input, explicitKind);
   const sourceUrl = inputType === "url" ? toUrl(input) : null;
@@ -588,15 +601,16 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageDa
   }
 
   const cacheKey = await hashValue(`${inputType}:${sourceUrl ?? ""}:${input}:${imageData ?? ""}`);
-  const cached = await readCachedAnalysis(cacheKey);
+  const cached = forceRefresh ? null : await readCachedAnalysis(cacheKey);
   if (cached) {
     return { ...cached, fromCache: true };
   }
 
   const scopeKey = await hashValue(`truthlens:${inputType}:${sourceUrl ?? input}`);
-  const allowed = await rateLimitScope(scopeKey);
-  if (!allowed) {
-    throw new Error("Rate limit exceeded. Please try again in a few minutes.");
+  const rateLimit = await rateLimitScope(scopeKey);
+  if (!rateLimit.allowed) {
+    const reset = rateLimit.resetAt ? ` Try again after ${new Date(rateLimit.resetAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}.` : " Please try again in a few minutes.";
+    throw new Error(`Rate limit exceeded.${reset}`);
   }
 
   const prompt = buildPrompt({
@@ -650,6 +664,15 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
+  if (req.method === "GET") {
+    try {
+      return jsonResponse({ count: await countAnalyses() });
+    } catch (error) {
+      console.error("Unable to count analyses", error);
+      return jsonResponse({ count: 0 });
+    }
+  }
+
   if (req.method !== "POST") {
     return jsonResponse({ error: "Method not allowed" }, 405);
   }
@@ -667,11 +690,16 @@ Deno.serve(async (req: Request) => {
       }
 
       const results: AnalysisEnvelope[] = [];
+      const errors: { input: string; message: string }[] = [];
       for (const item of items) {
-        results.push(await analyzeSingle(item.input, item.inputType));
+        try {
+          results.push(await analyzeSingle(item.input, item.inputType));
+        } catch (error) {
+          errors.push({ input: item.input, message: error instanceof Error ? error.message : "Unable to analyze this item" });
+        }
       }
 
-      return jsonResponse({ mode: "batch", results } satisfies BatchResponse);
+      return jsonResponse({ mode: "batch", results, ...(errors.length ? { errors } : {}) } satisfies BatchResponse);
     }
 
     const rawInput = normalizeInput(payload.input ?? payload.message ?? payload.url ?? (payload.inputType === "image" ? "[Image input]" : ""));
@@ -679,7 +707,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "Message or URL is required" }, 400);
     }
 
-    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput), payload.imageData, payload.mimeType);
+    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput), payload.imageData, payload.mimeType, payload.forceRefresh);
     return jsonResponse(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";

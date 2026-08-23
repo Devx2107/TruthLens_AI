@@ -9,6 +9,8 @@ void React;
 interface ResultCardProps {
   result: AnalysisResult;
   onCopyLink?: (result: AnalysisResult) => void;
+  onNewScan?: () => void;
+  onRefresh?: () => void;
 }
 
 function scoreTone(riskLevel: AnalysisResult['riskLevel']) {
@@ -29,7 +31,7 @@ function riskIcon(riskLevel: AnalysisResult['riskLevel']) {
   return <AlertCircle className="h-5 w-5 text-rose-400" />;
 }
 
-export default function ResultCard({ result, onCopyLink }: ResultCardProps) {
+export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh }: ResultCardProps) {
   return (
     <article className="glass-panel overflow-hidden rounded-[2rem] p-5 sm:p-6 shadow-[0_20px_80px_rgba(15,23,42,0.18)] animate-reveal-up">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -45,7 +47,7 @@ export default function ResultCard({ result, onCopyLink }: ResultCardProps) {
             </span>
             {result.fromCache && (
               <span className="inline-flex items-center gap-2 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-200">
-                Cached
+                Cached result from {Math.max(0, Math.floor((Date.now() - +new Date(result.createdAt)) / 86400000))} days ago
               </span>
             )}
           </div>
@@ -70,6 +72,8 @@ export default function ResultCard({ result, onCopyLink }: ResultCardProps) {
           <button type="button" onClick={() => void copyShareCardImage(result)} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white">
             <Copy className="h-4 w-4" /> Copy share image
           </button>
+          {result.fromCache && onRefresh && <button type="button" onClick={onRefresh} className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">Rescan fresh</button>}
+          {onNewScan && <button type="button" onClick={onNewScan} className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white">New scan</button>}
           {onCopyLink && (
             <button
               type="button"
@@ -127,7 +131,7 @@ export default function ResultCard({ result, onCopyLink }: ResultCardProps) {
             <dl className="space-y-3 text-sm">
               <div className="flex items-start justify-between gap-4">
                 <dt className="text-slate-500 dark:text-slate-400">Input type</dt>
-                <dd className="font-medium text-slate-700 dark:text-slate-200">{result.inputType === 'url' ? 'URL' : 'Text'}</dd>
+                <dd className="font-medium text-slate-700 dark:text-slate-200">{result.inputType === 'url' ? 'URL' : result.inputType === 'image' ? 'Image' : 'Text'}</dd>
               </div>
               <div className="flex items-start justify-between gap-4">
                 <dt className="text-slate-500 dark:text-slate-400">Source</dt>

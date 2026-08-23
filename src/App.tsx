@@ -23,7 +23,7 @@ import Dashboard from './components/Dashboard';
 import PolicyPage from './components/PolicyPage';
 import CompareView from './components/CompareView';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
-import { analyzeRequest, fetchPublicScan, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
+import { analyzeRequest, detectInputKind, fetchPublicScan, loadUsageCount, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
 import { supabase, hasSupabaseConfig } from './lib/supabase';
 
@@ -121,7 +121,9 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [batchResults, setBatchResults] = useState<AnalysisResult[]>([]);
+  const [batchErrors, setBatchErrors] = useState<{ input: string; message: string }[]>([]);
   const [history, setHistory] = useState<AnalysisResult[]>([]);
+  const [usageCount, setUsageCount] = useState<number | null>(null);
   const [sharedScan, setSharedScan] = useState<AnalysisResult | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [session, setSession] = useState<SessionSnapshot | null>(null);
@@ -129,6 +131,7 @@ function App() {
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement>(null);
+  const scanFormRef = useRef<HTMLFormElement>(null);
   const [footerVisible, setFooterVisible] = useState(false);
   const lastExampleIndex = useRef<number | null>(null);
 
@@ -181,7 +184,19 @@ function App() {
 
   useEffect(() => {
     setHistory(loadLocalHistory());
+    void loadUsageCount().then((count) => setUsageCount(count ?? loadLocalHistory().length));
   }, []);
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && route.kind === 'home') {
+        event.preventDefault();
+        scanFormRef.current?.requestSubmit();
+      }
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, [route.kind]);
 
   useEffect(() => {
     const client = supabase;
@@ -255,6 +270,7 @@ function App() {
     if (session) {
       await saveAnalysisForUser(scan, session.id);
     }
+    void loadUsageCount().then((count) => setUsageCount(count ?? loadLocalHistory().length));
   };
 
   const startAnalysis = async (event: FormEvent) => {
@@ -290,6 +306,7 @@ function App() {
     setResult(null);
     setCompareResult(null);
     setBatchResults([]);
+    setBatchErrors([]);
 
     const interval = window.setInterval(() => {
       setLoadingStage((stage) => (stage + 1) % loadingStages.length);
@@ -322,6 +339,8 @@ function App() {
         if (left && right) { setResult(left); setCompareResult(right); await Promise.all([persistScan(left), persistScan(right)]); }
       } else if ('results' in response) {
         setBatchResults(response.results);
+        if (response.errors?.length) setError(`${response.errors.length} batch item${response.errors.length === 1 ? '' : 's'} failed. ${response.errors[0].message}`);
+        setBatchErrors(response.errors ?? []);
         await Promise.all(response.results.map((scan) => persistScan(scan)));
         setResult(response.results[0] ?? null);
       } else {
@@ -378,6 +397,34 @@ function App() {
     setSession(null);
   };
 
+  const startNewScan = () => {
+    setResult(null);
+    setCompareResult(null);
+    setBatchResults([]);
+    setBatchErrors([]);
+    setSingleInput('');
+    setCompareInput('');
+    setImageData('');
+    setError(null);
+    setInternalRoute('home');
+  };
+
+  const refreshScan = async (scan: AnalysisResult) => {
+    setError(null);
+    setLoading(true);
+    try {
+      const refreshed = await analyzeRequest({ mode: 'single', input: scan.input, inputType: scan.inputType, forceRefresh: true });
+      if (!('results' in refreshed)) {
+        setResult(refreshed);
+        await persistScan(refreshed);
+      }
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : 'Unable to refresh this scan.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const setInternalRoute = (kind: 'home' | 'privacy' | 'terms') => {
     window.history.pushState({}, '', kind === 'home' ? '/' : `/${kind}`);
     setRoute({ kind });
@@ -409,7 +456,7 @@ function App() {
         <div className="animate-blob-three absolute bottom-0 left-1/3 h-64 w-64 rounded-full bg-emerald-400/10 blur-3xl" />
       </div>
 
-      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 pb-24 sm:px-6 lg:px-8">
+      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 pb-40 sm:px-6 sm:pb-24 lg:px-8">
         <header className="relative z-30 mb-6 flex flex-col gap-4 rounded-[2rem] border border-white/10 bg-white/5 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.18)] backdrop-blur-xl sm:p-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-start gap-4">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-lg shadow-cyan-500/20">
@@ -423,6 +470,7 @@ function App() {
               <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
                 Paste text, links, or batches of headlines. TruthLens breaks claims apart, scores credibility, and keeps a shareable record of every scan.
               </p>
+              <p className="mt-3 text-sm font-semibold text-cyan-200">{usageCount === null ? 'Analysing claims worldwide' : `${usageCount.toLocaleString()} claims analysed so far`}</p>
             </div>
           </div>
 
@@ -540,7 +588,7 @@ function App() {
 
                 <div className="mt-5">
                   {currentResult ? (
-                    <ResultCard result={currentResult} onCopyLink={copyShareLink} />
+                    <ResultCard result={currentResult} onCopyLink={copyShareLink} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} />
                   ) : notFound ? (
                     <div className="rounded-[1.75rem] border border-dashed border-white/10 bg-white/5 p-8 text-center">
                       <p className="text-xl font-bold text-white">This scan link has no saved data yet.</p>
@@ -557,7 +605,7 @@ function App() {
               </div>
             ) : (
               <>
-                <form onSubmit={startAnalysis} className="glass-panel rounded-[2rem] p-5 sm:p-6">
+                <form ref={scanFormRef} onSubmit={startAnalysis} className="glass-panel rounded-[2rem] p-5 sm:p-6">
                   <div className="flex flex-wrap gap-2">
                     <ModeButton active={mode === 'single'} icon={<TextCursorInput className="h-4 w-4" />} label="Single" onClick={() => setMode('single')} />
                     <ModeButton active={mode === 'batch'} icon={<Plus className="h-4 w-4" />} label="Batch" onClick={() => setMode('batch')} />
@@ -593,6 +641,7 @@ function App() {
                       <textarea
                         value={singleInput}
                         onChange={(event) => setSingleInput(event.target.value)}
+                        onPaste={(event) => { const pasted = event.clipboardData.getData('text'); if (detectInputKind(pasted) === 'url') setInputKind('url'); }}
                         placeholder={
                           inputKind === 'url'
                             ? 'https://news.example.com/story'
@@ -612,6 +661,7 @@ function App() {
                     >
                       {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                       {loading ? loadingMessage : 'Analyze claim'}
+                      {!loading && <span className="ml-1 hidden text-[11px] font-medium opacity-70 sm:inline">(Ctrl/Cmd+Enter)</span>}
                     </button>
 
                     <button
@@ -641,7 +691,7 @@ function App() {
                   )}
                 </form>
 
-                {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} />}
+                {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} />}
                 {compareResult && mode === 'compare' && currentResult && <CompareView left={currentResult} right={compareResult} />}
 
                 {batchResults.length > 0 && mode === 'batch' && (
@@ -672,6 +722,7 @@ function App() {
                           </div>
                         </button>
                       ))}
+                      {batchErrors.length > 0 && <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100"><p className="font-semibold">Skipped items</p><ul className="mt-2 space-y-1">{batchErrors.map((item) => <li key={item.input} className="truncate">{item.input}: {item.message}</li>)}</ul></div>}
                     </div>
                   </div>
                 )}
@@ -745,7 +796,7 @@ function App() {
             footerVisible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
           }`}
         >
-          <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 border-t border-white/10 bg-slate-950/90 px-4 py-3 text-xs text-slate-400 backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+          <div className="mx-auto flex max-h-[30vh] w-full max-w-7xl flex-col gap-3 overflow-y-auto border-t border-white/10 bg-slate-950/90 px-4 py-3 text-xs text-slate-400 backdrop-blur-xl sm:max-h-none sm:flex-row sm:items-center sm:justify-between sm:overflow-visible sm:px-6 lg:px-8">
             <div className="flex items-center gap-2 font-semibold text-slate-300">
               <Shield className="h-3.5 w-3.5 text-cyan-200" />
               TruthLens AI
