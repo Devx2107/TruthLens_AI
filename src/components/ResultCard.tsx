@@ -45,7 +45,7 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh, o
             </span>
             <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/5 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-white/5 dark:text-slate-300">
               <Sparkles className="h-3.5 w-3.5" />
-              {result.engine === 'gemini' ? 'Gemini analysis' : 'Demo fallback'}
+              {result.engine === 'gemini' ? 'Gemini analysis' : result.engine === 'groq' ? 'Groq backup model' : 'Limited local analysis'}
             </span>
             {result.fromCache && (
               <span className="inline-flex items-center gap-2 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-200">
@@ -60,7 +60,8 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh, o
           <p className="max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-300">
             {result.sourceDescription || result.summary}
           </p>
-          {result.engine === 'heuristic' && <p className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-100">Heuristic fallback score — Gemini was unavailable, so treat this result as a preliminary signal and verify the claims independently.</p>}
+          {result.engine === 'groq' && <p className="rounded-2xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-100">Backup model used because Gemini was unavailable. Verify important claims independently.</p>}
+          {result.engine === 'heuristic' && <p className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-100">Limited local analysis — AI services were unavailable. This result is lower confidence; verify the claims independently.</p>}
         </div>
 
         <div className="flex flex-wrap gap-2">

@@ -1,7 +1,7 @@
 export type InputKind = 'text' | 'url' | 'image';
 export type AnalysisMode = 'single' | 'batch' | 'compare';
 export type RiskLevel = 'Low' | 'Medium' | 'High';
-export type AnalysisEngine = 'gemini' | 'heuristic';
+export type AnalysisEngine = 'gemini' | 'groq' | 'heuristic';
 export type SourceCredibilityTier = 'Official' | 'Established' | 'Recognized' | 'Unknown' | 'Low-signal';
 
 export interface SourceCredibility {

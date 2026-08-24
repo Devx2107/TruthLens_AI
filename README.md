@@ -49,6 +49,16 @@ The app requires a GEMINI_API_KEY environment variable. Configure it in your Sup
 2. Navigate to Edge Functions secrets
 3. Add `GEMINI_API_KEY` with your Google Gemini API key
 
+4. Add the optional Groq fallback secret:
+
+```bash
+supabase secrets set GROQ_API_KEY=your-groq-key-here
+```
+
+The analysis function tries Gemini (with one retry), then Groq, then its local
+heuristic fallback. Set `GROQ_MODEL` if you want to override the default
+`llama-3.3-70b-versatile` model.
+
 ### 3. Run the Development Server
 
 ```bash

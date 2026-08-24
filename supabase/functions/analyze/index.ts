@@ -64,7 +64,7 @@ interface AnalysisEnvelope extends GeminiResponse {
   sourceDescription: string | null;
   sourceExcerpt: string;
   sourceCredibility: SourceCredibility | null;
-  engine: "gemini" | "heuristic";
+  engine: "gemini" | "groq" | "heuristic";
   createdAt: string;
   fromCache: boolean;
 }
@@ -532,6 +532,60 @@ async function callGeminiVision(prompt: string, imageData: string, mimeType: str
   return safeParseJson(generatedText) as GeminiResponse;
 }
 
+async function callGeminiVisionWithRetry(prompt: string, imageData: string, mimeType: string, geminiApiKey: string, retries = 1) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await callGeminiVision(prompt, imageData, mimeType, geminiApiKey);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const isRateLimit = message.includes("429") || message.toLowerCase().includes("resource_exhausted");
+      if (isRateLimit || attempt === retries) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+async function callGeminiWithRetry(prompt: string, geminiApiKey: string, retries = 1) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await callGemini(prompt, geminiApiKey);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const isRateLimit = message.includes("429") || message.toLowerCase().includes("resource_exhausted");
+      if (isRateLimit || attempt === retries) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+async function callGroq(prompt: string, groqApiKey: string) {
+  const model = Deno.env.get("GROQ_MODEL") ?? "llama-3.3-70b-versatile";
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqApiKey}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: "You are a misinformation-analysis engine. Respond with ONLY valid JSON matching the required schema — no markdown fences, no commentary." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.3,
+      response_format: { type: "json_object" },
+    }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const data = await response.json();
+  const generatedText = data.choices?.[0]?.message?.content;
+  if (!generatedText) throw new Error("No response from Groq");
+  return safeParseJson(generatedText) as GeminiResponse;
+}
+
 function normalizeGeminiResult(value: GeminiResponse): GeminiResponse {
   const claims = Array.isArray(value.claims) ? value.claims : [];
 
@@ -767,12 +821,26 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageDa
       throw new Error("Gemini API key not configured");
     }
 
-    analysis = normalizeGeminiResult(inputType === "image" && imageData ? await callGeminiVision(prompt, imageData, mimeType, geminiApiKey) : await callGemini(prompt, geminiApiKey));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn("Gemini unavailable, using heuristic fallback:", reason);
-    engine = "heuristic";
-    analysis = scoreTextHeuristically(prepared.sourceExcerpt, reason);
+    analysis = normalizeGeminiResult(inputType === "image" && imageData
+      ? await callGeminiVisionWithRetry(prompt, imageData, mimeType, geminiApiKey)
+      : await callGeminiWithRetry(prompt, geminiApiKey));
+  } catch (geminiError) {
+    const geminiReason = geminiError instanceof Error ? geminiError.message : String(geminiError);
+    console.warn("Gemini unavailable, trying Groq fallback:", geminiReason);
+
+    try {
+      const groqApiKey = Deno.env.get("GROQ_API_KEY");
+      if (!groqApiKey) {
+        throw new Error("Groq API key not configured");
+      }
+      analysis = normalizeGeminiResult(await callGroq(prompt, groqApiKey));
+      engine = "groq";
+    } catch (groqError) {
+      const groqReason = groqError instanceof Error ? groqError.message : String(groqError);
+      console.warn("Groq unavailable, using heuristic fallback:", groqReason);
+      engine = "heuristic";
+      analysis = scoreTextHeuristically(prepared.sourceExcerpt, `${geminiReason} / ${groqReason}`);
+    }
   }
 
   analysis = { ...analysis, claims: await enrichClaimsWithEvidence(analysis.claims) };
