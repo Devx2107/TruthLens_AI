@@ -1,4 +1,4 @@
-import type { AnalyzeRequest, AnalysisResult, BatchAnalysisResponse, ClaimAnalysis, InputKind, UsageStats } from '../types';
+import type { AnalyzeRequest, AnalysisResult, BatchAnalysisResponse, ClaimAnalysis, InputKind, UsageStats, SourceCredibility } from '../types';
 import { hasSupabaseConfig, supabase } from './supabase';
 
 function clamp(value: number, min: number, max: number) {
@@ -13,6 +13,36 @@ export function detectInputKind(input: string, explicit?: InputKind): InputKind 
 
 function normalizeText(value: string) {
   return value.trim().replace(/\s+/g, ' ');
+}
+
+function scoreSourceCredibility(input: string): SourceCredibility | null {
+  const value = input.trim();
+  if (!/^https?:\/\/\S+/i.test(value) && !/^www\.\S+/i.test(value)) return null;
+  try {
+    const url = new URL(/^www\./i.test(value) ? `https://${value}` : value);
+    const domain = url.hostname.toLowerCase().replace(/^www\./, '');
+    const official = ['gov.in', 'gov.uk', 'gov', 'who.int', 'nasa.gov', 'isro.gov.in', 'nih.gov'];
+    const established = ['reuters.com', 'apnews.com', 'bbc.com', 'theguardian.com', 'nytimes.com', 'washingtonpost.com'];
+    const recognized = ['thehindu.com', 'indianexpress.com', 'ndtv.com', 'hindustantimes.com', 'timesofindia.indiatimes.com'];
+    const signals = url.protocol === 'https:' ? ['HTTPS transport'] : [];
+    let tier: SourceCredibility['tier'] = 'Unknown';
+    let score = 50;
+    if (official.some((item) => domain === item || domain.endsWith(`.${item}`)) || domain.endsWith('.edu') || domain.endsWith('.ac.in')) {
+      tier = 'Official'; score = 85; signals.push('Official, government, health, or academic domain');
+    } else if (established.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Established'; score = 78; signals.push('Established editorial publisher');
+    } else if (recognized.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Recognized'; score = 68; signals.push('Recognized regional or national publisher');
+    } else if (domain.split('.').length < 2 || /(^|[.-])(viral|forward|truth|dailyalerts|breaking)[.-]/i.test(domain)) {
+      tier = 'Low-signal'; score = 35; signals.push('Domain has limited publisher-identification signals');
+    } else {
+      signals.push('Publisher is not in the current reference set');
+    }
+    if (url.protocol === 'https:') score = Math.min(100, score + 5);
+    return { score, tier, domain, signals };
+  } catch {
+    return null;
+  }
 }
 
 function buildHeuristicClaims(input: string, score: number, confidence: number) {
@@ -68,6 +98,7 @@ function localAnalyzeOne(input: string, inputType: InputKind): AnalysisResult {
     sourceTitle: null,
     sourceDescription: null,
     sourceExcerpt: input,
+    sourceCredibility: scoreSourceCredibility(input),
     credibilityScore,
     confidence,
     riskLevel,
@@ -106,14 +137,17 @@ async function postToEdgeFunction(payload: AnalyzeRequest) {
   if (!response.ok) {
     const errorText = await response.text();
     let message = errorText || 'Failed to analyze';
+    let retryAt: string | null | undefined;
     try {
-      const parsed = JSON.parse(errorText) as { error?: string };
+      const parsed = JSON.parse(errorText) as { error?: string; retryAt?: string | null };
       message = parsed.error || message;
+      retryAt = parsed.retryAt;
     } catch {
       // Preserve plain-text edge-function errors.
     }
-    const error = new Error(message) as Error & { status?: number };
+    const error = new Error(message) as Error & { status?: number; retryAt?: string | null };
     error.status = response.status;
+    error.retryAt = retryAt;
     throw error;
   }
 
@@ -150,6 +184,28 @@ export async function loadUsageCount(): Promise<number | null> {
     return Number.isFinite(payload.count) ? payload.count : null;
   } catch {
     return null;
+  }
+}
+
+export async function submitAnalysisFeedback(scanId: string, rating: 'up' | 'down') {
+  if (!hasSupabaseConfig) return;
+  const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ feedback: { scanId, rating } }),
+  });
+  if (!response.ok) throw new Error('Unable to save feedback');
+}
+
+export async function fetchTrendingScans() {
+  if (!hasSupabaseConfig) return [] as AnalysisResult[];
+  try {
+    const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze?feed=trending`, { headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` } });
+    if (!response.ok) return [];
+    const payload = (await response.json()) as { results?: AnalysisResult[] };
+    return payload.results ?? [];
+  } catch {
+    return [] as AnalysisResult[];
   }
 }
 

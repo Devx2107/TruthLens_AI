@@ -1,5 +1,5 @@
-import React from 'react';
-import { AlertCircle, AlertTriangle, CheckCircle2, Copy, Info, Link2, ShieldCheck, Sparkles } from 'lucide-react';
+import React, { useState } from 'react';
+import { AlertCircle, AlertTriangle, CheckCircle2, Copy, ExternalLink, Info, Link2, ShieldCheck, Sparkles, ThumbsDown, ThumbsUp } from 'lucide-react';
 import type { AnalysisResult } from '../types';
 import CredibilityMeter from './CredibilityMeter';
 import { copyShareCardImage, downloadShareCardPng } from '../lib/share';
@@ -11,6 +11,7 @@ interface ResultCardProps {
   onCopyLink?: (result: AnalysisResult) => void;
   onNewScan?: () => void;
   onRefresh?: () => void;
+  onFeedback?: (rating: 'up' | 'down') => void;
 }
 
 function scoreTone(riskLevel: AnalysisResult['riskLevel']) {
@@ -31,7 +32,8 @@ function riskIcon(riskLevel: AnalysisResult['riskLevel']) {
   return <AlertCircle className="h-5 w-5 text-rose-400" />;
 }
 
-export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh }: ResultCardProps) {
+export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh, onFeedback }: ResultCardProps) {
+  const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
   return (
     <article className="glass-panel overflow-hidden rounded-[2rem] p-5 sm:p-6 shadow-[0_20px_80px_rgba(15,23,42,0.18)] animate-reveal-up">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -58,6 +60,7 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh }:
           <p className="max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-300">
             {result.sourceDescription || result.summary}
           </p>
+          {result.engine === 'heuristic' && <p className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-100">Heuristic fallback score — Gemini was unavailable, so treat this result as a preliminary signal and verify the claims independently.</p>}
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -98,6 +101,17 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh }:
             </div>
             <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{result.summary}</p>
           </section>
+
+          {result.sourceCredibility && (
+            <section className="rounded-3xl border border-cyan-400/20 bg-cyan-400/5 p-4 dark:bg-cyan-400/10">
+              <div className="flex items-center justify-between gap-3">
+                <div><p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Publisher signal</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{result.sourceCredibility.domain}</p></div>
+                <span className="text-xl font-black text-cyan-200">{result.sourceCredibility.score}/100</span>
+              </div>
+              <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">{result.sourceCredibility.tier} source tier. This describes publisher signals, not whether every claim is true.</p>
+              <div className="mt-3 flex flex-wrap gap-2">{result.sourceCredibility.signals.map((signal) => <span key={signal} className="rounded-full border border-white/10 px-2.5 py-1 text-xs text-slate-500 dark:text-slate-300">{signal}</span>)}</div>
+            </section>
+          )}
 
           <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
@@ -166,6 +180,7 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh }:
                       <span className={`text-xs font-semibold ${verdictTone(claim.verdict)}`}>{claim.verdict}</span>
                     </div>
                     <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{claim.rationale}</p>
+                    {claim.evidence && claim.evidence.length > 0 && <div className="mt-3 space-y-1.5"><p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-300">Related reporting</p>{claim.evidence.map((item) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="flex items-start gap-1.5 text-xs text-cyan-300 hover:text-cyan-100"><ExternalLink className="mt-0.5 h-3 w-3 shrink-0" /><span>{item.title}{item.publisher ? ` · ${item.publisher}` : ''}</span></a>)}</div>}
                     <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-indigo-400 transition-all duration-700"
@@ -206,6 +221,7 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh }:
             </div>
             <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{result.explanation}</p>
           </section>
+          {onFeedback && <section className="flex items-center justify-between rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5"><p className="text-sm text-slate-600 dark:text-slate-300">Was this verdict useful?</p><div className="flex gap-2"><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('up'); onFeedback('up'); }} className={`rounded-full border p-2 ${feedback === 'up' ? 'border-emerald-400 text-emerald-300' : 'border-white/10 text-slate-400'}`} aria-label="Agree with verdict"><ThumbsUp className="h-4 w-4" /></button><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('down'); onFeedback('down'); }} className={`rounded-full border p-2 ${feedback === 'down' ? 'border-rose-400 text-rose-300' : 'border-white/10 text-slate-400'}`} aria-label="Disagree with verdict"><ThumbsDown className="h-4 w-4" /></button></div></section>}
         </div>
       </div>
     </article>

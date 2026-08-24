@@ -2,6 +2,14 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 type InputKind = "text" | "url" | "image";
 type RiskLevel = "Low" | "Medium" | "High";
+type SourceCredibilityTier = "Official" | "Established" | "Recognized" | "Unknown" | "Low-signal";
+
+interface SourceCredibility {
+  score: number;
+  tier: SourceCredibilityTier;
+  domain: string;
+  signals: string[];
+}
 
 interface AnalyzeItem {
   input: string;
@@ -18,6 +26,7 @@ interface AnalyzeRequest {
   imageData?: string;
   mimeType?: string;
   forceRefresh?: boolean;
+  feedback?: { scanId: string; rating: "up" | "down" };
 }
 
 interface ClaimAnalysis {
@@ -26,6 +35,13 @@ interface ClaimAnalysis {
   confidence: number;
   verdict: "Likely true" | "Mixed" | "Likely false";
   rationale: string;
+  evidence?: EvidenceLink[];
+}
+
+interface EvidenceLink {
+  title: string;
+  url: string;
+  publisher: string | null;
 }
 
 interface GeminiResponse {
@@ -47,6 +63,7 @@ interface AnalysisEnvelope extends GeminiResponse {
   sourceTitle: string | null;
   sourceDescription: string | null;
   sourceExcerpt: string;
+  sourceCredibility: SourceCredibility | null;
   engine: "gemini" | "heuristic";
   createdAt: string;
   fromCache: boolean;
@@ -145,6 +162,42 @@ function toUrl(raw: string) {
   if (/^https?:\/\//i.test(value)) return value;
   if (/^www\./i.test(value)) return `https://${value}`;
   return value;
+}
+
+class RateLimitError extends Error {
+  constructor(public resetAt: string | null) {
+    super('Rate limit exceeded');
+  }
+}
+
+function scoreSourceCredibility(raw: string): SourceCredibility | null {
+  const value = raw.trim();
+  if (!/^https?:\/\/\S+/i.test(value) && !/^www\.\S+/i.test(value)) return null;
+  try {
+    const url = new URL(/^www\./i.test(value) ? `https://${value}` : value);
+    const domain = url.hostname.toLowerCase().replace(/^www\./, '');
+    const official = ['gov.in', 'gov.uk', 'gov', 'who.int', 'nasa.gov', 'isro.gov.in', 'nih.gov'];
+    const established = ['reuters.com', 'apnews.com', 'bbc.com', 'theguardian.com', 'nytimes.com', 'washingtonpost.com'];
+    const recognized = ['thehindu.com', 'indianexpress.com', 'ndtv.com', 'hindustantimes.com', 'timesofindia.indiatimes.com'];
+    const signals = url.protocol === 'https:' ? ['HTTPS transport'] : [];
+    let tier: SourceCredibilityTier = 'Unknown';
+    let score = 50;
+    if (official.some((item) => domain === item || domain.endsWith(`.${item}`)) || domain.endsWith('.edu') || domain.endsWith('.ac.in')) {
+      tier = 'Official'; score = 85; signals.push('Official, government, health, or academic domain');
+    } else if (established.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Established'; score = 78; signals.push('Established editorial publisher');
+    } else if (recognized.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Recognized'; score = 68; signals.push('Recognized regional or national publisher');
+    } else if (domain.split('.').length < 2 || /(^|[.-])(viral|forward|truth|dailyalerts|breaking)[.-]/i.test(domain)) {
+      tier = 'Low-signal'; score = 35; signals.push('Domain has limited publisher-identification signals');
+    } else {
+      signals.push('Publisher is not in the current reference set');
+    }
+    if (url.protocol === 'https:') score = Math.min(100, score + 5);
+    return { score, tier, domain, signals };
+  } catch {
+    return null;
+  }
 }
 
 function removeNoiseSections(html: string) {
@@ -376,6 +429,34 @@ async function callGemini(prompt: string, geminiApiKey: string) {
   return safeParseJson(generatedText) as GeminiResponse;
 }
 
+function decodeXml(value: string) {
+  return value.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+}
+
+async function searchClaimEvidence(claim: string): Promise<EvidenceLink[]> {
+  try {
+    const searchUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(claim)}&hl=en-IN&gl=IN&ceid=IN:en`;
+    const response = await fetch(searchUrl, { headers: { accept: 'application/rss+xml, application/xml' } });
+    if (!response.ok) return [];
+    const xml = await response.text();
+    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 2).map((match) => {
+      const item = match[1];
+      const title = item.match(/<title>([\s\S]*?)<\/title>/i)?.[1];
+      const url = item.match(/<link>([\s\S]*?)<\/link>/i)?.[1];
+      const publisher = item.match(/<source[^>]*>([\s\S]*?)<\/source>/i)?.[1];
+      return title && url ? { title: decodeXml(title).trim(), url: decodeXml(url).trim(), publisher: publisher ? decodeXml(publisher).trim() : null } : null;
+    }).filter((item): item is EvidenceLink => Boolean(item));
+  } catch {
+    return [];
+  }
+}
+
+async function enrichClaimsWithEvidence(claims: ClaimAnalysis[]) {
+  const selected = claims.slice(0, 4);
+  const evidence = await Promise.all(selected.map((claim) => searchClaimEvidence(claim.claim)));
+  return claims.map((claim, index) => ({ ...claim, evidence: evidence[index] ?? [] }));
+}
+
 async function countAnalyses() {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -385,6 +466,28 @@ async function countAnalyses() {
   });
   const range = response.headers.get("content-range");
   return Number(range?.split("/")[1] ?? 0) || 0;
+}
+
+async function loadTrendingScans() {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) return [];
+  const response = await fetch(`${supabaseUrl}/rest/v1/scan_pages?select=payload&is_public=eq.true&order=created_at.desc&limit=40`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
+  if (!response.ok) return [];
+  const rows = await response.json();
+  return rows.map((row: { payload?: AnalysisEnvelope }) => row.payload).filter(Boolean).sort((a: AnalysisEnvelope, b: AnalysisEnvelope) => a.credibilityScore - b.credibilityScore).slice(0, 12);
+}
+
+async function storeFeedback(feedback: { scanId: string; rating: "up" | "down" }) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) throw new Error("Feedback storage is not configured");
+  const response = await fetch(`${supabaseUrl}/rest/v1/analysis_feedback`, {
+    method: "POST",
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify({ scan_id: feedback.scanId, rating: feedback.rating }),
+  });
+  if (!response.ok) throw new Error("Unable to save feedback");
 }
 
 async function callGeminiVision(prompt: string, imageData: string, mimeType: string, geminiApiKey: string) {
@@ -591,6 +694,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageDa
     sourceTitle: null as string | null,
     sourceDescription: null as string | null,
     sourceExcerpt: inputType === "image" ? "[Image input — content extracted by Gemini Vision]" : input,
+    sourceCredibility: scoreSourceCredibility(input),
   };
 
   if (sourceUrl) {
@@ -609,8 +713,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageDa
   const scopeKey = await hashValue(`truthlens:${inputType}:${sourceUrl ?? input}`);
   const rateLimit = await rateLimitScope(scopeKey);
   if (!rateLimit.allowed) {
-    const reset = rateLimit.resetAt ? ` Try again after ${new Date(rateLimit.resetAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}.` : " Please try again in a few minutes.";
-    throw new Error(`Rate limit exceeded.${reset}`);
+    throw new RateLimitError(rateLimit.resetAt);
   }
 
   const prompt = buildPrompt({
@@ -638,6 +741,16 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageDa
     analysis = scoreTextHeuristically(prepared.sourceExcerpt, reason);
   }
 
+  analysis = { ...analysis, claims: await enrichClaimsWithEvidence(analysis.claims) };
+
+  if (prepared.sourceCredibility && inputType === "url") {
+    const blended = Math.round(analysis.credibilityScore * 0.75 + prepared.sourceCredibility.score * 0.25);
+    analysis = { ...analysis, credibilityScore: blended, riskLevel: blended >= 70 ? "Low" : blended >= 45 ? "Medium" : "High" };
+    if (prepared.sourceCredibility.tier === "Unknown" || prepared.sourceCredibility.tier === "Low-signal") {
+      analysis.warnings = [...analysis.warnings, "Publisher credibility is uncertain; the domain score is a signal, not proof that the claims are true."];
+    }
+  }
+
   const envelope: AnalysisEnvelope = {
     id: crypto.randomUUID(),
     input,
@@ -646,6 +759,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageDa
     sourceTitle: prepared.sourceTitle,
     sourceDescription: prepared.sourceDescription,
     sourceExcerpt: prepared.sourceExcerpt,
+    sourceCredibility: prepared.sourceCredibility,
     engine,
     fromCache: false,
     createdAt: new Date().toISOString(),
@@ -666,6 +780,7 @@ Deno.serve(async (req: Request) => {
 
   if (req.method === "GET") {
     try {
+      if (new URL(req.url).searchParams.get("feed") === "trending") return jsonResponse({ results: await loadTrendingScans() });
       return jsonResponse({ count: await countAnalyses() });
     } catch (error) {
       console.error("Unable to count analyses", error);
@@ -679,6 +794,12 @@ Deno.serve(async (req: Request) => {
 
   try {
     const payload = (await req.json()) as AnalyzeRequest;
+
+    if (payload.feedback) {
+      if (!payload.feedback.scanId || !["up", "down"].includes(payload.feedback.rating)) return jsonResponse({ error: "Invalid feedback" }, 400);
+      await storeFeedback(payload.feedback);
+      return jsonResponse({ ok: true });
+    }
 
     if (payload.mode === "batch" || Array.isArray(payload.items)) {
       const items = (payload.items ?? [])
@@ -712,6 +833,7 @@ Deno.serve(async (req: Request) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";
     console.error("Error in analyze function:", error);
-    return jsonResponse({ error: message }, message.includes("Rate limit") ? 429 : 500);
+    if (error instanceof RateLimitError) return jsonResponse({ error: `${message}. Please wait before trying again.`, retryAt: error.resetAt }, 429);
+    return jsonResponse({ error: message }, 500);
   }
 });

@@ -2,6 +2,14 @@ export type InputKind = 'text' | 'url' | 'image';
 export type AnalysisMode = 'single' | 'batch' | 'compare';
 export type RiskLevel = 'Low' | 'Medium' | 'High';
 export type AnalysisEngine = 'gemini' | 'heuristic';
+export type SourceCredibilityTier = 'Official' | 'Established' | 'Recognized' | 'Unknown' | 'Low-signal';
+
+export interface SourceCredibility {
+  score: number;
+  tier: SourceCredibilityTier;
+  domain: string;
+  signals: string[];
+}
 
 export interface ClaimAnalysis {
   claim: string;
@@ -9,6 +17,13 @@ export interface ClaimAnalysis {
   confidence: number;
   verdict: 'Likely true' | 'Mixed' | 'Likely false';
   rationale: string;
+  evidence?: EvidenceLink[];
+}
+
+export interface EvidenceLink {
+  title: string;
+  url: string;
+  publisher: string | null;
 }
 
 export interface AnalysisResult {
@@ -19,6 +34,7 @@ export interface AnalysisResult {
   sourceTitle: string | null;
   sourceDescription: string | null;
   sourceExcerpt: string;
+  sourceCredibility: SourceCredibility | null;
   credibilityScore: number;
   confidence: number;
   riskLevel: RiskLevel;
@@ -53,6 +69,7 @@ export interface AnalyzeRequest {
   imageData?: string;
   mimeType?: string;
   forceRefresh?: boolean;
+  feedback?: { scanId: string; rating: 'up' | 'down' };
 }
 
 export interface UsageStats {

@@ -22,14 +22,15 @@ import ResultCard from './components/ResultCard';
 import Dashboard from './components/Dashboard';
 import PolicyPage from './components/PolicyPage';
 import CompareView from './components/CompareView';
+import TrendingPage from './components/TrendingPage';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
-import { analyzeRequest, detectInputKind, fetchPublicScan, loadUsageCount, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
+import { analyzeRequest, detectInputKind, fetchPublicScan, fetchTrendingScans, loadUsageCount, loadUserHistory, saveAnalysisForUser, submitAnalysisFeedback } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
 import { supabase, hasSupabaseConfig } from './lib/supabase';
 
 void React;
 
-type RouteState = { kind: 'home' } | { kind: 'scan'; id: string } | { kind: 'privacy' } | { kind: 'terms' };
+type RouteState = { kind: 'home' } | { kind: 'scan'; id: string } | { kind: 'privacy' } | { kind: 'terms' } | { kind: 'trending' };
 
 const loadingStages = ['Reading message', 'Checking sources', 'Scoring credibility'];
 
@@ -59,6 +60,7 @@ const examplePool: { single: string; batch: string }[] = [
 function detectRoute(): RouteState {
   if (window.location.pathname === '/privacy') return { kind: 'privacy' };
   if (window.location.pathname === '/terms') return { kind: 'terms' };
+  if (window.location.pathname === '/trending') return { kind: 'trending' };
   const match = window.location.pathname.match(/^\/scan\/([^/]+)$/i);
   if (match?.[1]) {
     return { kind: 'scan', id: decodeURIComponent(match[1]) };
@@ -119,12 +121,15 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [loadingStage, setLoadingStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [retryAt, setRetryAt] = useState<string | null>(null);
+  const [retrySeconds, setRetrySeconds] = useState<number | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [batchResults, setBatchResults] = useState<AnalysisResult[]>([]);
   const [batchErrors, setBatchErrors] = useState<{ input: string; message: string }[]>([]);
   const [history, setHistory] = useState<AnalysisResult[]>([]);
   const [usageCount, setUsageCount] = useState<number | null>(null);
   const [sharedScan, setSharedScan] = useState<AnalysisResult | null>(null);
+  const [trendingScans, setTrendingScans] = useState<AnalysisResult[]>([]);
   const [notFound, setNotFound] = useState(false);
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [email, setEmail] = useState('');
@@ -181,6 +186,19 @@ function App() {
       cancelled = true;
     };
   }, [route]);
+
+  useEffect(() => {
+    if (route.kind !== 'trending') return;
+    void fetchTrendingScans().then(setTrendingScans);
+  }, [route.kind]);
+
+  useEffect(() => {
+    if (!retryAt) { setRetrySeconds(null); return; }
+    const update = () => setRetrySeconds(Math.max(0, Math.ceil((Date.parse(retryAt) - Date.now()) / 1000)));
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [retryAt]);
 
   useEffect(() => {
     setHistory(loadLocalHistory());
@@ -276,6 +294,7 @@ function App() {
   const startAnalysis = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
+    setRetryAt(null);
 
     const singleValue = singleInput.trim();
     const batchValues = batchInput
@@ -350,6 +369,7 @@ function App() {
         setRoute({ kind: 'scan', id: response.id });
       }
     } catch (analysisError) {
+      setRetryAt(analysisError instanceof Error ? (analysisError as Error & { retryAt?: string | null }).retryAt ?? null : null);
       setError(analysisError instanceof Error ? analysisError.message : 'Unable to analyze the message. Please try again.');
     } finally {
       window.clearInterval(interval);
@@ -406,6 +426,7 @@ function App() {
     setCompareInput('');
     setImageData('');
     setError(null);
+    setRetryAt(null);
     setInternalRoute('home');
   };
 
@@ -419,13 +440,18 @@ function App() {
         await persistScan(refreshed);
       }
     } catch (refreshError) {
+      setRetryAt(refreshError instanceof Error ? (refreshError as Error & { retryAt?: string | null }).retryAt ?? null : null);
       setError(refreshError instanceof Error ? refreshError.message : 'Unable to refresh this scan.');
     } finally {
       setLoading(false);
     }
   };
 
-  const setInternalRoute = (kind: 'home' | 'privacy' | 'terms') => {
+  const submitFeedback = async (scan: AnalysisResult, rating: 'up' | 'down') => {
+    try { await submitAnalysisFeedback(scan.id, rating); } catch { setError('Feedback could not be saved. Please try again.'); }
+  };
+
+  const setInternalRoute = (kind: 'home' | 'privacy' | 'terms' | 'trending') => {
     window.history.pushState({}, '', kind === 'home' ? '/' : `/${kind}`);
     setRoute({ kind });
   };
@@ -573,6 +599,8 @@ function App() {
           <section className="space-y-6">
             {route.kind === 'privacy' || route.kind === 'terms' ? (
               <PolicyPage title={route.kind === 'privacy' ? 'Privacy Policy' : 'Terms of Use'} onBack={() => setInternalRoute('home')} content={route.kind === 'privacy' ? ['TruthLens processes the text, URLs, and images you submit to provide an analysis. Signed-in users may also have an email address and scan history stored in Supabase.', 'We do not sell or share your personal information. Guest history stays in your browser; synced history is stored with Supabase. To request deletion, sign out and contact hello@truthlens.ai.'] : ['TruthLens is an AI-assisted information analysis tool. Results can be wrong and are not legal, medical, financial, or professional advice.', 'Use the service fairly and verify important claims with reliable sources. You are responsible for decisions made using the service.']} />
+            ) : route.kind === 'trending' ? (
+              <TrendingPage scans={trendingScans} onOpen={openScan} />
             ) : route.kind === 'scan' ? (
               <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
                 <button
@@ -588,7 +616,7 @@ function App() {
 
                 <div className="mt-5">
                   {currentResult ? (
-                    <ResultCard result={currentResult} onCopyLink={copyShareLink} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} />
+                    <ResultCard result={currentResult} onCopyLink={copyShareLink} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onFeedback={(rating) => void submitFeedback(currentResult, rating)} />
                   ) : notFound ? (
                     <div className="rounded-[1.75rem] border border-dashed border-white/10 bg-white/5 p-8 text-center">
                       <p className="text-xl font-bold text-white">This scan link has no saved data yet.</p>
@@ -687,11 +715,12 @@ function App() {
                   {error && (
                     <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
                       {error}
+                      {retrySeconds !== null && retrySeconds > 0 && <span className="mt-1 block font-semibold">You can try again in {retrySeconds}s.</span>}
                     </div>
                   )}
                 </form>
 
-                {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} />}
+                {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onFeedback={(rating) => void submitFeedback(currentResult, rating)} />}
                 {compareResult && mode === 'compare' && currentResult && <CompareView left={currentResult} right={compareResult} />}
 
                 {batchResults.length > 0 && mode === 'batch' && (
@@ -808,6 +837,9 @@ function App() {
               </a>
               <a href="/terms" onClick={(event) => { event.preventDefault(); setInternalRoute('terms'); }} className="transition hover:text-white">
                 Terms
+              </a>
+              <a href="/trending" onClick={(event) => { event.preventDefault(); setInternalRoute('trending'); }} className="transition hover:text-white">
+                Recently debunked
               </a>
               <a href="mailto:hello@truthlens.ai" className="transition hover:text-white">
                 Contact
