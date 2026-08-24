@@ -261,6 +261,34 @@ function extractTitle(html: string) {
 }
 
 async function fetchUrlContext(url: string) {
+  const parsedUrl = new URL(url);
+  const hostname = parsedUrl.hostname.toLowerCase().replace(/\.$/, '');
+  const ipv4 = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)?.slice(1).map(Number);
+  const isPrivateIpv4 = ipv4 && (
+    ipv4[0] === 0 ||
+    ipv4[0] === 10 ||
+    ipv4[0] === 127 ||
+    (ipv4[0] === 169 && ipv4[1] === 254) ||
+    (ipv4[0] === 172 && ipv4[1] >= 16 && ipv4[1] <= 31) ||
+    (ipv4[0] === 192 && ipv4[1] === 168)
+  );
+  if (
+    !['http:', 'https:'].includes(parsedUrl.protocol) ||
+    parsedUrl.username ||
+    parsedUrl.password ||
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local') ||
+    hostname === 'metadata.google.internal' ||
+    hostname === '::1' ||
+    hostname.startsWith('fc') ||
+    hostname.startsWith('fd') ||
+    hostname.startsWith('fe80:') ||
+    Boolean(isPrivateIpv4)
+  ) {
+    throw new Error('Local and private network URLs are not supported');
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
 
@@ -588,7 +616,7 @@ async function storePublicScanPage(
       input_text: payload.input,
       input_url: payload.sourceUrl,
       payload,
-      is_public: true,
+      is_public: false,
       created_at: payload.createdAt,
     }),
   });
@@ -698,10 +726,16 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageDa
   };
 
   if (sourceUrl) {
-    const context = await fetchUrlContext(sourceUrl);
-    prepared.sourceTitle = context.sourceTitle;
-    prepared.sourceDescription = context.sourceDescription;
-    prepared.sourceExcerpt = context.sourceExcerpt || input;
+    try {
+      const context = await fetchUrlContext(sourceUrl);
+      prepared.sourceTitle = context.sourceTitle;
+      prepared.sourceDescription = context.sourceDescription;
+      prepared.sourceExcerpt = context.sourceExcerpt || input;
+    } catch (error) {
+      prepared.sourceDescription = error instanceof Error && error.message.includes('private network')
+        ? 'The URL was not fetched because it points to a local or private network address.'
+        : 'The URL could not be fetched; analysis is based on the submitted link.';
+    }
   }
 
   const cacheKey = await hashValue(`${inputType}:${sourceUrl ?? ""}:${input}:${imageData ?? ""}`);

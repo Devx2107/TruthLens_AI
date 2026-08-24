@@ -250,7 +250,7 @@ export async function saveAnalysisForUser(result: AnalysisResult, userId: string
     input_text: result.input,
     input_url: result.sourceUrl,
     payload: result,
-    is_public: true,
+    is_public: false,
     created_at: result.createdAt,
   };
 

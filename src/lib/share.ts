@@ -115,7 +115,9 @@ export async function shareCardPngBlob(result: AnalysisResult): Promise<Blob> {
     const canvas = document.createElement('canvas');
     canvas.width = 1200;
     canvas.height = 630;
-    canvas.getContext('2d')?.drawImage(image, 0, 0, 1200, 630);
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Unable to create image canvas');
+    context.drawImage(image, 0, 0, 1200, 630);
     return await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Unable to create PNG')), 'image/png'));
   } finally {
     URL.revokeObjectURL(svgUrl);

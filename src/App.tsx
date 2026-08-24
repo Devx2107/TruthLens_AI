@@ -69,8 +69,11 @@ function detectRoute(): RouteState {
   return { kind: 'home' };
 }
 
-function copyText(value: string) {
-  return navigator.clipboard.writeText(value);
+async function copyText(value: string) {
+  if (!navigator.clipboard?.writeText) {
+    throw new Error('Clipboard access is unavailable');
+  }
+  await navigator.clipboard.writeText(value);
 }
 
 function mergeHistory(primary: AnalysisResult[], secondary: AnalysisResult[]) {
@@ -141,6 +144,11 @@ function App() {
   const lastExampleIndex = useRef<number | null>(null);
 
   const loadingMessage = loadingStages[loadingStage % loadingStages.length];
+
+  const changeMode = (nextMode: AnalysisMode) => {
+    setMode(nextMode);
+    if (nextMode !== 'single' && inputKind === 'image') setInputKind('text');
+  };
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -384,7 +392,12 @@ function App() {
 
   const copyShareLink = async (scan: AnalysisResult) => {
     const shareUrl = `${window.location.origin}/scan/${scan.id}`;
-    await copyText(shareUrl);
+    try {
+      await copyText(shareUrl);
+      setAuthMessage('Link copied. It opens on this browser unless the scan is explicitly published.');
+    } catch {
+      setError('Unable to copy the link. Check your browser clipboard permissions.');
+    }
   };
 
   const signIn = async () => {
@@ -635,9 +648,9 @@ function App() {
               <>
                 <form ref={scanFormRef} onSubmit={startAnalysis} className="glass-panel rounded-[2rem] p-5 sm:p-6">
                   <div className="flex flex-wrap gap-2">
-                    <ModeButton active={mode === 'single'} icon={<TextCursorInput className="h-4 w-4" />} label="Single" onClick={() => setMode('single')} />
-                    <ModeButton active={mode === 'batch'} icon={<Plus className="h-4 w-4" />} label="Batch" onClick={() => setMode('batch')} />
-                    <ModeButton active={mode === 'compare'} icon={<Link2 className="h-4 w-4" />} label="Compare" onClick={() => setMode('compare')} />
+                    <ModeButton active={mode === 'single'} icon={<TextCursorInput className="h-4 w-4" />} label="Single" onClick={() => changeMode('single')} />
+                    <ModeButton active={mode === 'batch'} icon={<Plus className="h-4 w-4" />} label="Batch" onClick={() => changeMode('batch')} />
+                    <ModeButton active={mode === 'compare'} icon={<Link2 className="h-4 w-4" />} label="Compare" onClick={() => changeMode('compare')} />
                   </div>
 
                   <div className="mt-4 flex flex-wrap gap-2">
