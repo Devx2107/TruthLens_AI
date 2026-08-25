@@ -6,9 +6,11 @@ export type SourceCredibilityTier = 'Official' | 'Established' | 'Recognized' | 
 
 export interface SourceCredibility {
   score: number;
-  tier: SourceCredibilityTier;
   domain: string;
-  signals: string[];
+  tier?: SourceCredibilityTier;
+  signals?: string[];
+  label?: 'Established publisher' | 'Limited signal' | 'Caution signal';
+  rationale?: string;
 }
 
 export interface ClaimAnalysis {
@@ -85,4 +87,3 @@ export interface SessionSnapshot {
   id: string;
   email: string | null;
 }
-

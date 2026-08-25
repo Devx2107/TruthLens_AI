@@ -109,8 +109,10 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh, o
                 <div><p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Publisher signal</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{result.sourceCredibility.domain}</p></div>
                 <span className="text-xl font-black text-cyan-200">{result.sourceCredibility.score}/100</span>
               </div>
-              <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">{result.sourceCredibility.tier} source tier. This describes publisher signals, not whether every claim is true.</p>
-              <div className="mt-3 flex flex-wrap gap-2">{result.sourceCredibility.signals.map((signal) => <span key={signal} className="rounded-full border border-white/10 px-2.5 py-1 text-xs text-slate-500 dark:text-slate-300">{signal}</span>)}</div>
+              <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">{result.sourceCredibility.tier ?? result.sourceCredibility.label ?? 'Limited signal'} source tier. This describes publisher signals, not whether every claim is true.</p>
+              {result.sourceCredibility.signals?.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">{result.sourceCredibility.signals.map((signal) => <span key={signal} className="rounded-full border border-white/10 px-2.5 py-1 text-xs text-slate-500 dark:text-slate-300">{signal}</span>)}</div>
+              ) : null}
             </section>
           )}
 
@@ -154,6 +156,17 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh, o
                   {result.sourceTitle || result.sourceUrl || 'Local demo'}
                 </dd>
               </div>
+              {result.sourceCredibility && (
+                <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="text-slate-500 dark:text-slate-400">Publisher signal</dt>
+                    <dd className="font-semibold text-cyan-700 dark:text-cyan-200">{result.sourceCredibility.label ?? result.sourceCredibility.tier ?? 'Limited signal'}</dd>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    {result.sourceCredibility.domain} · {result.sourceCredibility.score}/100. {result.sourceCredibility.rationale ?? result.sourceCredibility.signals?.join(', ') ?? 'No additional publisher context available.'}
+                  </p>
+                </div>
+              )}
               <div className="flex items-start justify-between gap-4">
                 <dt className="text-slate-500 dark:text-slate-400">Scanned</dt>
                 <dd className="font-medium text-slate-700 dark:text-slate-200">
