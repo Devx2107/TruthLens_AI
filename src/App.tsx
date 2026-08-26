@@ -87,20 +87,20 @@ function ModeButton({
   icon,
   label,
   onClick,
-  }: {
-    active: boolean;
-    icon: ReactNode;
-    label: string;
-    onClick: () => void;
-  }) {
+}: {
+  active: boolean;
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition ${
         active
-          ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-50 shadow-[0_10px_30px_rgba(34,211,238,0.2)]'
-          : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white'
+          ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-700 dark:text-cyan-50 shadow-[0_10px_30px_rgba(34,211,238,0.2)]'
+          : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white'
       }`}
     >
       {icon}
@@ -486,7 +486,7 @@ function App() {
   };
 
   return (
-    <div className={`min-h-screen overflow-hidden text-slate-100 ${theme === 'dark' ? 'bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#081122_45%,_#0b1324_100%)]' : 'bg-[radial-gradient(circle_at_top,_rgba(125,211,252,0.28),_transparent_32%),linear-gradient(180deg,_#f8fafc_0%,_#e0f2fe_55%,_#eef2ff_100%)]'}`}>
+    <div className={`min-h-screen overflow-hidden ${theme === 'dark' ? 'text-slate-100 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#081122_45%,_#0b1324_100%)]' : 'text-slate-900 bg-[radial-gradient(circle_at_top,_rgba(125,211,252,0.28),_transparent_32%),linear-gradient(180deg,_#f8fafc_0%,_#e0f2fe_55%,_#eef2ff_100%)]'}`}>
       <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] bg-[size:28px_28px] opacity-30" />
 
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -496,20 +496,20 @@ function App() {
       </div>
 
       <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 pb-40 sm:px-6 sm:pb-24 lg:px-8">
-        <header className="relative z-30 mb-6 flex flex-col gap-4 rounded-[2rem] border border-white/10 bg-white/5 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.18)] backdrop-blur-xl sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+        <header className="relative z-30 mb-6 flex flex-col gap-4 rounded-[2rem] border border-slate-200/80 bg-white/60 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.10)] backdrop-blur-xl dark:border-white/10 dark:bg-white/5 dark:shadow-[0_20px_80px_rgba(15,23,42,0.18)] sm:p-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-start gap-4">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-lg shadow-cyan-500/20">
               <Shield className="h-7 w-7" />
             </div>
             <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">TruthLens AI</p>
-              <h1 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">
+              <p className="text-xs uppercase tracking-[0.35em] text-cyan-600 dark:text-cyan-200/80">TruthLens AI</p>
+              <h1 className="mt-1 text-2xl font-black tracking-tight text-slate-900 dark:text-white sm:text-3xl">
                 Smarter misinformation scans that feel alive.
               </h1>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
                 Paste text, links, or batches of headlines. TruthLens breaks claims apart, scores credibility, and keeps a shareable record of every scan.
               </p>
-              <p className="mt-3 text-sm font-semibold text-cyan-200">{usageCount === null ? 'Analysing claims worldwide' : `${usageCount.toLocaleString()} claims analysed so far`}</p>
+              <p className="mt-3 text-sm font-semibold text-cyan-700 dark:text-cyan-200">{usageCount === null ? 'Analysing claims worldwide' : `${usageCount.toLocaleString()} claims analysed so far`}</p>
             </div>
           </div>
 
@@ -517,13 +517,13 @@ function App() {
             <button
               type="button"
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:hover:bg-white/10"
             >
               {theme === 'dark' ? <SunMedium className="h-4 w-4" /> : <MoonStar className="h-4 w-4" />}
               {theme === 'dark' ? 'Light mode' : 'Dark mode'}
             </button>
 
-            <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-100">
+            <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100">
               <Bot className="h-4 w-4" />
               {hasSupabaseConfig ? 'Supabase ready' : 'Demo mode'}
             </span>
@@ -534,8 +534,8 @@ function App() {
                 onClick={() => setAccountOpen((open) => !open)}
                 className={`inline-flex h-10 w-10 items-center justify-center rounded-full border transition ${
                   session
-                    ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-50'
-                    : 'border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+                    ? 'border-cyan-500/40 bg-cyan-100 text-cyan-700 dark:bg-cyan-400/15 dark:text-cyan-50'
+                    : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10'
                 }`}
                 aria-label="Account"
               >
@@ -543,28 +543,28 @@ function App() {
               </button>
 
               {accountOpen && (
-                <div className="absolute right-0 z-20 mt-2 w-80 rounded-[1.5rem] border border-white/10 bg-slate-950/95 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.4)] backdrop-blur-xl">
+                <div className="absolute right-0 z-20 mt-2 w-80 rounded-[1.5rem] border border-slate-200 bg-white/95 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.15)] backdrop-blur-xl dark:border-white/10 dark:bg-slate-950/95 dark:shadow-[0_20px_60px_rgba(15,23,42,0.4)]">
                   <div className="flex items-center justify-between gap-4">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Account</p>
-                      <h2 className="mt-1 text-sm font-bold text-white">History and sync</h2>
+                      <p className="text-xs uppercase tracking-[0.35em] text-cyan-600 dark:text-cyan-200/70">Account</p>
+                      <h2 className="mt-1 text-sm font-bold text-slate-900 dark:text-white">History and sync</h2>
                     </div>
                     <History className="h-5 w-5 text-cyan-200" />
                   </div>
 
                   {supabase ? (
                     <div className="mt-4 space-y-4">
-                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/5">
                         {session ? (
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-white">{session.email || session.id}</p>
-                              <p className="text-xs text-slate-400">Signed in with Supabase Auth</p>
+                              <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{session.email || session.id}</p>
+                              <p className="text-xs text-slate-500 dark:text-slate-400">Signed in with Supabase Auth</p>
                             </div>
                             <button
                               type="button"
                               onClick={() => void signOut()}
-                              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+                              className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:hover:bg-white/10"
                             >
                               <LogOut className="h-4 w-4" />
                               Sign out
@@ -577,12 +577,12 @@ function App() {
                               value={email}
                               onChange={(event) => setEmail(event.target.value)}
                               placeholder="you@example.com"
-                              className="w-full rounded-2xl border border-white/10 bg-slate-950/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-400/40"
+                              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-cyan-500/60 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40"
                             />
                             <button
                               type="button"
                               onClick={() => void signIn()}
-                              className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-white px-4 py-3 text-sm font-bold text-slate-950 transition hover:-translate-y-0.5"
+                              className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:-translate-y-0.5 dark:bg-white dark:text-slate-950"
                             >
                               <LogIn className="h-4 w-4" />
                               Email me a sign-in link
@@ -590,15 +590,15 @@ function App() {
                           </div>
                         )}
 
-                        {authMessage && <p className="mt-3 text-sm text-slate-300">{authMessage}</p>}
+                        {authMessage && <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">{authMessage}</p>}
                       </div>
 
-                      <p className="text-sm leading-6 text-slate-400">
+                      <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
                         Signed-in users can sync their scan history to Supabase. Everyone else keeps a local history in the browser.
                       </p>
                     </div>
                   ) : (
-                    <p className="mt-4 text-sm leading-6 text-slate-400">
+                    <p className="mt-4 text-sm leading-6 text-slate-500 dark:text-slate-400">
                       Add your Supabase environment variables to enable sign-in, synced history, and public scan pages.
                     </p>
                   )}
@@ -621,7 +621,7 @@ function App() {
                   onClick={() => {
                     setInternalRoute('home');
                   }}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white/10 hover:text-white dark:text-slate-200"
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10 dark:hover:text-white"
                 >
                   <ArrowLeft className="h-4 w-4" />
                   Back to scanner
@@ -631,14 +631,14 @@ function App() {
                   {currentResult ? (
                     <ResultCard result={currentResult} onCopyLink={copyShareLink} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onFeedback={(rating) => void submitFeedback(currentResult, rating)} />
                   ) : notFound ? (
-                    <div className="rounded-[1.75rem] border border-dashed border-white/10 bg-white/5 p-8 text-center">
-                      <p className="text-xl font-bold text-white">This scan link has no saved data yet.</p>
-                      <p className="mt-2 text-sm text-slate-300">
+                    <div className="rounded-[1.75rem] border border-dashed border-slate-300 bg-slate-50 p-8 text-center dark:border-white/10 dark:bg-white/5">
+                      <p className="text-xl font-bold text-slate-900 dark:text-white">This scan link has no saved data yet.</p>
+                      <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
                         The share page works best after a scan has been saved locally or synced to Supabase.
                       </p>
                     </div>
                   ) : (
-                    <div className="rounded-[1.75rem] border border-white/10 bg-white/5 p-8 text-center text-slate-300">
+                    <div className="rounded-[1.75rem] border border-slate-300 bg-slate-50 p-8 text-center text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
                       Loading scan...
                     </div>
                   )}
@@ -664,18 +664,18 @@ function App() {
                       {mode === 'batch' ? 'Paste one headline or URL per line' : inputKind === 'url' ? 'Paste a link to scan' : inputKind === 'image' ? 'Upload or paste a screenshot' : 'Paste a message or headline'}
                     </label>
 
-                    {mode === 'compare' ? <div className="grid gap-3 md:grid-cols-2"><div><div className="mb-2 flex gap-2"><ModeButton active={inputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text" onClick={() => setInputKind('text')} /><ModeButton active={inputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL" onClick={() => setInputKind('url')} /></div><textarea value={singleInput} onChange={(event) => setSingleInput(event.target.value)} placeholder="First claim" className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none" disabled={loading} /></div><div><div className="mb-2 flex gap-2"><ModeButton active={compareInputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text" onClick={() => setCompareInputKind('text')} /><ModeButton active={compareInputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL" onClick={() => setCompareInputKind('url')} /></div><textarea value={compareInput} onChange={(event) => setCompareInput(event.target.value)} placeholder="Second claim" className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none" disabled={loading} /></div></div> : mode === 'batch' ? (
+                    {mode === 'compare' ? <div className="grid gap-3 md:grid-cols-2"><div><div className="mb-2 flex gap-2"><ModeButton active={inputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text" onClick={() => setInputKind('text')} /><ModeButton active={inputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL" onClick={() => setInputKind('url')} /></div><textarea value={singleInput} onChange={(event) => setSingleInput(event.target.value)} placeholder="First claim" className="min-h-44 w-full rounded-[1.5rem] border border-slate-300 bg-white px-4 py-4 text-base leading-7 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40 dark:focus:ring-cyan-400/20" disabled={loading} /></div><div><div className="mb-2 flex gap-2"><ModeButton active={compareInputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text" onClick={() => setCompareInputKind('text')} /><ModeButton active={compareInputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL" onClick={() => setCompareInputKind('url')} /></div><textarea value={compareInput} onChange={(event) => setCompareInput(event.target.value)} placeholder="Second claim" className="min-h-44 w-full rounded-[1.5rem] border border-slate-300 bg-white px-4 py-4 text-base leading-7 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40 dark:focus:ring-cyan-400/20" disabled={loading} /></div></div> : mode === 'batch' ? (
                       <textarea
                         value={batchInput}
                         onChange={(event) => setBatchInput(event.target.value)}
                         placeholder={'Headline one\nHeadline two\nhttps://example.com/story'}
-                        className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/20"
+                        className="min-h-44 w-full rounded-[1.5rem] border border-slate-300 bg-white px-4 py-4 text-base leading-7 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40 dark:focus:ring-cyan-400/20"
                         disabled={loading}
                       />
                     ) : inputKind === 'image' ? (
-                      <div className="rounded-[1.5rem] border border-dashed border-cyan-400/30 bg-slate-950/30 p-5 text-center">
-                        <input type="file" accept="image/*" onChange={(event) => event.target.files?.[0] && readImage(event.target.files[0])} disabled={loading} className="block w-full text-sm text-slate-300" />
-                        <button type="button" onClick={() => void pasteImage()} className="mt-3 rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-white"><Upload className="mr-2 inline h-4 w-4" />Paste from clipboard</button>
+                      <div className="rounded-[1.5rem] border border-dashed border-cyan-400/30 bg-slate-50 p-5 text-center dark:bg-slate-950/30">
+                        <input type="file" accept="image/*" onChange={(event) => event.target.files?.[0] && readImage(event.target.files[0])} disabled={loading} className="block w-full text-sm text-slate-600 dark:text-slate-300" />
+                        <button type="button" onClick={() => void pasteImage()} className="mt-3 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-white"><Upload className="mr-2 inline h-4 w-4" />Paste from clipboard</button>
                         {imageData && <img src={imageData} alt="Selected preview" className="mx-auto mt-4 max-h-48 rounded-2xl" />}
                       </div>
                     ) : (
@@ -688,7 +688,7 @@ function App() {
                             ? 'https://news.example.com/story'
                             : 'Hot water cures all viruses. Share immediately!'
                         }
-                        className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/20"
+                        className="min-h-44 w-full rounded-[1.5rem] border border-slate-300 bg-white px-4 py-4 text-base leading-7 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40 dark:focus:ring-cyan-400/20"
                         disabled={loading}
                       />
                     )}
@@ -718,7 +718,7 @@ function App() {
                         setBatchInput(example.batch);
                         setError(null);
                       }}
-                      className="inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+                      className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:hover:bg-white/10"
                     >
                       <Sparkles className="h-4 w-4" />
                       Load examples
@@ -726,7 +726,7 @@ function App() {
                   </div>
 
                   {error && (
-                    <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+                    <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-50 px-4 py-3 text-sm text-rose-900 dark:bg-rose-500/10 dark:text-rose-100">
                       {error}
                       {retrySeconds !== null && retrySeconds > 0 && <span className="mt-1 block font-semibold">You can try again in {retrySeconds}s.</span>}
                     </div>
@@ -740,10 +740,10 @@ function App() {
                   <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
                     <div className="mb-4 flex items-center justify-between gap-4">
                       <div>
-                        <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Batch results</p>
-                        <h2 className="mt-1 text-xl font-bold text-white">{batchResults.length} items scanned</h2>
+                        <p className="text-xs uppercase tracking-[0.35em] text-cyan-600 dark:text-cyan-200/70">Batch results</p>
+                        <h2 className="mt-1 text-xl font-bold text-slate-900 dark:text-white">{batchResults.length} items scanned</h2>
                       </div>
-                      <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm font-semibold text-slate-300">
+                      <span className="rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
                         {batchResults.filter((scan) => scan.engine === 'gemini').length} AI backed
                       </span>
                     </div>
@@ -753,18 +753,18 @@ function App() {
                           key={scan.id}
                           type="button"
                           onClick={() => openScan(scan.id)}
-                          className="w-full rounded-[1.5rem] border border-white/10 bg-white/5 p-4 text-left transition hover:-translate-y-0.5 hover:bg-white/10"
+                          className="w-full rounded-[1.5rem] border border-slate-200 bg-white/80 p-4 text-left transition hover:-translate-y-0.5 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
                         >
                           <div className="flex items-center justify-between gap-4">
                             <div>
-                              <p className="font-semibold text-white">{scan.sourceTitle || scan.input}</p>
-                              <p className="mt-1 text-sm text-slate-400">{scan.summary}</p>
+                              <p className="font-semibold text-slate-900 dark:text-white">{scan.sourceTitle || scan.input}</p>
+                              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{scan.summary}</p>
                             </div>
-                            <span className="text-sm font-bold text-cyan-200">{scan.credibilityScore}/100</span>
+                            <span className="text-sm font-bold text-cyan-700 dark:text-cyan-200">{scan.credibilityScore}/100</span>
                           </div>
                         </button>
                       ))}
-                      {batchErrors.length > 0 && <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100"><p className="font-semibold">Skipped items</p><ul className="mt-2 space-y-1">{batchErrors.map((item) => <li key={item.input} className="truncate">{item.input}: {item.message}</li>)}</ul></div>}
+                      {batchErrors.length > 0 && <div className="rounded-2xl border border-amber-400/20 bg-amber-50 p-4 text-sm text-amber-900 dark:bg-amber-400/10 dark:text-amber-100"><p className="font-semibold">Skipped items</p><ul className="mt-2 space-y-1">{batchErrors.map((item) => <li key={item.input} className="truncate">{item.input}: {item.message}</li>)}</ul></div>}
                     </div>
                   </div>
                 )}
@@ -775,8 +775,8 @@ function App() {
           <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Recent</p>
-                  <h2 className="mt-1 text-xl font-bold text-white">Saved scans</h2>
+                  <p className="text-xs uppercase tracking-[0.35em] text-cyan-600 dark:text-cyan-200/70">Recent</p>
+                  <h2 className="mt-1 text-xl font-bold text-slate-900 dark:text-white">Saved scans</h2>
                 </div>
                 <button
                   type="button"
@@ -784,7 +784,7 @@ function App() {
                     saveLocalHistory([]);
                     setHistory([]);
                   }}
-                  className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
+                  className="rounded-full border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
                 >
                   Clear local
                 </button>
@@ -797,19 +797,19 @@ function App() {
                       key={scan.id}
                       type="button"
                       onClick={() => openScan(scan.id)}
-                      className="w-full rounded-2xl border border-white/10 bg-white/5 p-4 text-left transition hover:-translate-y-0.5 hover:bg-white/10"
+                      className="w-full rounded-2xl border border-slate-200 bg-white/80 p-4 text-left transition hover:-translate-y-0.5 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
                     >
                       <div className="flex items-center justify-between gap-4">
                         <div className="min-w-0">
-                          <p className="truncate font-semibold text-white">{scan.sourceTitle || scan.input}</p>
-                          <p className="mt-1 truncate text-sm text-slate-400">{scan.summary}</p>
+                          <p className="truncate font-semibold text-slate-900 dark:text-white">{scan.sourceTitle || scan.input}</p>
+                          <p className="mt-1 truncate text-sm text-slate-500 dark:text-slate-400">{scan.summary}</p>
                         </div>
-                        <span className="text-sm font-bold text-cyan-200">{scan.credibilityScore}</span>
+                        <span className="text-sm font-bold text-cyan-700 dark:text-cyan-200">{scan.credibilityScore}</span>
                       </div>
                     </button>
                   ))
                 ) : (
-                  <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-5 text-sm text-slate-400">
+                  <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-500 dark:border-white/10 dark:bg-white/5 dark:text-slate-400">
                     No scans yet. Run one and we’ll keep it here.
                   </div>
                 )}
@@ -817,11 +817,11 @@ function App() {
             </section>
 
             <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
-              <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                <Upload className="h-4 w-4 text-cyan-200" />
-                What’s new
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                <Upload className="h-4 w-4 text-cyan-600 dark:text-cyan-200" />
+                What's new
               </div>
-              <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-300">
+              <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
                 <li>URL mode fetches page metadata before scoring.</li>
                 <li>Batch mode scans multiple lines in one go.</li>
                 <li>Results show confidence, claim breakdowns, and shareable cards.</li>
@@ -838,9 +838,9 @@ function App() {
             footerVisible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
           }`}
         >
-          <div className="mx-auto flex max-h-[30vh] w-full max-w-7xl flex-col gap-3 overflow-y-auto border-t border-white/10 bg-slate-950/90 px-4 py-3 text-xs text-slate-400 backdrop-blur-xl sm:max-h-none sm:flex-row sm:items-center sm:justify-between sm:overflow-visible sm:px-6 lg:px-8">
-            <div className="flex items-center gap-2 font-semibold text-slate-300">
-              <Shield className="h-3.5 w-3.5 text-cyan-200" />
+          <div className="mx-auto flex max-h-[30vh] w-full max-w-7xl flex-col gap-3 overflow-y-auto border-t border-slate-200 bg-white/90 px-4 py-3 text-xs text-slate-500 backdrop-blur-xl dark:border-white/10 dark:bg-slate-950/90 dark:text-slate-400 sm:max-h-none sm:flex-row sm:items-center sm:justify-between sm:overflow-visible sm:px-6 lg:px-8">
+            <div className="flex items-center gap-2 font-semibold text-slate-700 dark:text-slate-300">
+              <Shield className="h-3.5 w-3.5 text-cyan-600 dark:text-cyan-200" />
               TruthLens AI
             </div>
 
@@ -868,7 +868,7 @@ function App() {
               <button
                 type="button"
                 onClick={() => void copyText(window.location.origin)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 font-semibold text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
               >
                 <Copy className="h-3 w-3" />
                 Copy app URL
