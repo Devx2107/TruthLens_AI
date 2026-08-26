@@ -117,6 +117,16 @@ begin
   end if;
 
   if not exists (
+    select 1 from pg_policies where schemaname = 'public' and tablename = 'scan_pages' and policyname = 'Users can update their own scan pages'
+  ) then
+    create policy "Users can update their own scan pages"
+      on public.scan_pages
+      for update
+      using (auth.uid() = user_id)
+      with check (auth.uid() = user_id);
+  end if;
+
+  if not exists (
     select 1 from pg_policies where schemaname = 'public' and tablename = 'scan_pages' and policyname = 'Public can read published scans'
   ) then
     create policy "Public can read published scans"
