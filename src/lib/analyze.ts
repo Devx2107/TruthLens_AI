@@ -1,17 +1,5 @@
-import type { AnalyzeRequest, AnalysisResult, BatchAnalysisResponse, ClaimAnalysis, InputKind } from '../types';
+import type { AnalyzeRequest, AnalysisResult, BatchAnalysisResponse, ClaimAnalysis, InputKind, UsageStats, SourceCredibility } from '../types';
 import { hasSupabaseConfig, supabase } from './supabase';
-
-export class AnalyzeRequestError extends Error {
-  status: number;
-  retryAfterSeconds?: number;
-
-  constructor(message: string, status: number, retryAfterSeconds?: number) {
-    super(message);
-    this.name = 'AnalyzeRequestError';
-    this.status = status;
-    this.retryAfterSeconds = retryAfterSeconds;
-  }
-}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -25,6 +13,36 @@ export function detectInputKind(input: string, explicit?: InputKind): InputKind 
 
 function normalizeText(value: string) {
   return value.trim().replace(/\s+/g, ' ');
+}
+
+function scoreSourceCredibility(input: string): SourceCredibility | null {
+  const value = input.trim();
+  if (!/^https?:\/\/\S+/i.test(value) && !/^www\.\S+/i.test(value)) return null;
+  try {
+    const url = new URL(/^www\./i.test(value) ? `https://${value}` : value);
+    const domain = url.hostname.toLowerCase().replace(/^www\./, '');
+    const official = ['gov.in', 'gov.uk', 'gov', 'who.int', 'nasa.gov', 'isro.gov.in', 'nih.gov'];
+    const established = ['reuters.com', 'apnews.com', 'bbc.com', 'theguardian.com', 'nytimes.com', 'washingtonpost.com'];
+    const recognized = ['thehindu.com', 'indianexpress.com', 'ndtv.com', 'hindustantimes.com', 'timesofindia.indiatimes.com'];
+    const signals = url.protocol === 'https:' ? ['HTTPS transport'] : [];
+    let tier: SourceCredibility['tier'] = 'Unknown';
+    let score = 50;
+    if (official.some((item) => domain === item || domain.endsWith(`.${item}`)) || domain.endsWith('.edu') || domain.endsWith('.ac.in')) {
+      tier = 'Official'; score = 85; signals.push('Official, government, health, or academic domain');
+    } else if (established.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Established'; score = 78; signals.push('Established editorial publisher');
+    } else if (recognized.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Recognized'; score = 68; signals.push('Recognized regional or national publisher');
+    } else if (domain.split('.').length < 2 || /(^|[.-])(viral|forward|truth|dailyalerts|breaking)[.-]/i.test(domain)) {
+      tier = 'Low-signal'; score = 35; signals.push('Domain has limited publisher-identification signals');
+    } else {
+      signals.push('Publisher is not in the current reference set');
+    }
+    if (url.protocol === 'https:') score = Math.min(100, score + 5);
+    return { score, tier, domain, signals };
+  } catch {
+    return null;
+  }
 }
 
 function buildHeuristicClaims(input: string, score: number, confidence: number) {
@@ -80,6 +98,7 @@ function localAnalyzeOne(input: string, inputType: InputKind): AnalysisResult {
     sourceTitle: null,
     sourceDescription: null,
     sourceExcerpt: input,
+    sourceCredibility: scoreSourceCredibility(input),
     credibilityScore,
     confidence,
     riskLevel,
@@ -118,15 +137,18 @@ async function postToEdgeFunction(payload: AnalyzeRequest) {
   if (!response.ok) {
     const errorText = await response.text();
     let message = errorText || 'Failed to analyze';
-    let retryAfterSeconds: number | undefined;
+    let retryAt: string | null | undefined;
     try {
-      const body = JSON.parse(errorText) as { error?: string; retryAfterSeconds?: number };
-      message = body.error || message;
-      retryAfterSeconds = body.retryAfterSeconds;
+      const parsed = JSON.parse(errorText) as { error?: string; retryAt?: string | null };
+      message = parsed.error || message;
+      retryAt = parsed.retryAt;
     } catch {
-      // Keep the raw response for non-JSON errors.
+      // Preserve plain-text edge-function errors.
     }
-    throw new AnalyzeRequestError(message, response.status, retryAfterSeconds);
+    const error = new Error(message) as Error & { status?: number; retryAt?: string | null };
+    error.status = response.status;
+    error.retryAt = retryAt;
+    throw error;
   }
 
   return response.json() as Promise<AnalysisResult | BatchAnalysisResponse>;
@@ -134,12 +156,9 @@ async function postToEdgeFunction(payload: AnalyzeRequest) {
 
 export async function analyzeRequest(payload: AnalyzeRequest): Promise<AnalysisResult | BatchAnalysisResponse> {
   try {
-    return await postToEdgeFunction(payload);
+      return await postToEdgeFunction(payload);
   } catch (error) {
-    if (error instanceof AnalyzeRequestError && error.status === 429) {
-      throw error;
-    }
-
+    if (error instanceof Error && (error as Error & { status?: number }).status === 429) throw error;
     if (payload.mode === 'batch' || Array.isArray(payload.items)) {
       const items = payload.items ?? [];
       return {
@@ -151,6 +170,42 @@ export async function analyzeRequest(payload: AnalyzeRequest): Promise<AnalysisR
     const text = normalizeText(payload.input ?? payload.message ?? payload.url ?? '');
     const kind = detectInputKind(text, payload.inputType);
     return localAnalyzeOne(text, kind);
+  }
+}
+
+export async function loadUsageCount(): Promise<number | null> {
+  if (!hasSupabaseConfig) return null;
+  try {
+    const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze`, {
+      headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
+    });
+    if (!response.ok) return null;
+    const payload = (await response.json()) as UsageStats;
+    return Number.isFinite(payload.count) ? payload.count : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function submitAnalysisFeedback(scanId: string, rating: 'up' | 'down') {
+  if (!hasSupabaseConfig) return;
+  const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ feedback: { scanId, rating } }),
+  });
+  if (!response.ok) throw new Error('Unable to save feedback');
+}
+
+export async function fetchTrendingScans() {
+  if (!hasSupabaseConfig) return [] as AnalysisResult[];
+  try {
+    const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze?feed=trending`, { headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` } });
+    if (!response.ok) return [];
+    const payload = (await response.json()) as { results?: AnalysisResult[] };
+    return payload.results ?? [];
+  } catch {
+    return [] as AnalysisResult[];
   }
 }
 
@@ -188,9 +243,21 @@ export async function saveAnalysisForUser(result: AnalysisResult, userId: string
     created_at: result.createdAt,
   };
 
-  // Public scan pages are created by the Edge Function with the service role.
-  // Keep the client-side write scoped to the user's private history row.
-  await supabase.from('analysis_history').upsert(historyRow, { onConflict: 'scan_id' });
+  const scanRow = {
+    scan_id: result.id,
+    user_id: userId,
+    input_kind: result.inputType,
+    input_text: result.input,
+    input_url: result.sourceUrl,
+    payload: result,
+    is_public: false,
+    created_at: result.createdAt,
+  };
+
+  await Promise.allSettled([
+    supabase.from('analysis_history').upsert(historyRow, { onConflict: 'scan_id' }),
+    supabase.from('scan_pages').upsert(scanRow, { onConflict: 'scan_id' }),
+  ]);
 }
 
 export async function loadUserHistory(userId: string) {

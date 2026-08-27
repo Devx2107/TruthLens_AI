@@ -39,7 +39,9 @@ export function getLocalScan(scanId: string) {
 }
 
 export function getThemePreference(): ThemeMode {
-  return readJson<ThemeMode>(THEME_KEY, 'dark');
+  const saved = readJson<ThemeMode | null>(THEME_KEY, null);
+  if (saved === 'light' || saved === 'dark') return saved;
+  return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 export function saveThemePreference(theme: ThemeMode) {

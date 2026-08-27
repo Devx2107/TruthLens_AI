@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "TruthLens AI",
+  "version": "0.2.0",
+  "description": "Check selected text with TruthLens AI.",
+  "permissions": ["contextMenus", "storage", "activeTab", "scripting"],
+  "host_permissions": ["https://mwmjlaaiqogvjjgqlnwd.supabase.co/*"],
+  "action": { "default_popup": "popup.html" },
+  "background": { "scripts": ["background.js"] },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "browser_specific_settings": {
+    "gecko": { "id": "truthlens-ai@example.com", "strict_min_version": "128.0" }
+  },
+  "icons": {
+    "16": "icons/icon-16.svg",
+    "48": "icons/icon-48.svg",
+    "128": "icons/icon-128.svg"
+  }
+}

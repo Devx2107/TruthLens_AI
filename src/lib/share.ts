@@ -102,3 +102,44 @@ export function downloadShareCard(result: AnalysisResult) {
   URL.revokeObjectURL(url);
 }
 
+export async function shareCardPngBlob(result: AnalysisResult): Promise<Blob> {
+  const svgBlob = new Blob([createShareSvg(result)], { type: 'image/svg+xml;charset=utf-8' });
+  const svgUrl = URL.createObjectURL(svgBlob);
+  try {
+    const image = new Image();
+    image.src = svgUrl;
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('Unable to render share card'));
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = 1200;
+    canvas.height = 630;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Unable to create image canvas');
+    context.drawImage(image, 0, 0, 1200, 630);
+    return await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Unable to create PNG')), 'image/png'));
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+export async function downloadShareCardPng(result: AnalysisResult) {
+  const blob = await shareCardPngBlob(result);
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `truthlens-${result.id}.png`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function copyShareCardImage(result: AnalysisResult) {
+  try {
+    const blob = await shareCardPngBlob(result);
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  } catch {
+    await downloadShareCardPng(result);
+  }
+}
+

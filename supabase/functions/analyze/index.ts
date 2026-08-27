@@ -1,8 +1,15 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-type InputKind = "text" | "url";
+type InputKind = "text" | "url" | "image";
 type RiskLevel = "Low" | "Medium" | "High";
-type SourceCredibilityLabel = "Established publisher" | "Limited signal" | "Caution signal";
+type SourceCredibilityTier = "Official" | "Established" | "Recognized" | "Unknown" | "Low-signal";
+
+interface SourceCredibility {
+  score: number;
+  tier: SourceCredibilityTier;
+  domain: string;
+  signals: string[];
+}
 
 interface AnalyzeItem {
   input: string;
@@ -16,6 +23,10 @@ interface AnalyzeRequest {
   message?: string;
   url?: string;
   items?: AnalyzeItem[];
+  imageData?: string;
+  mimeType?: string;
+  forceRefresh?: boolean;
+  feedback?: { scanId: string; rating: "up" | "down" };
 }
 
 interface ClaimAnalysis {
@@ -24,6 +35,13 @@ interface ClaimAnalysis {
   confidence: number;
   verdict: "Likely true" | "Mixed" | "Likely false";
   rationale: string;
+  evidence?: EvidenceLink[];
+}
+
+interface EvidenceLink {
+  title: string;
+  url: string;
+  publisher: string | null;
 }
 
 interface GeminiResponse {
@@ -45,13 +63,8 @@ interface AnalysisEnvelope extends GeminiResponse {
   sourceTitle: string | null;
   sourceDescription: string | null;
   sourceExcerpt: string;
-  sourceCredibility?: {
-    domain: string;
-    score: number;
-    label: SourceCredibilityLabel;
-    rationale: string;
-  };
-  engine: "gemini" | "heuristic";
+  sourceCredibility: SourceCredibility | null;
+  engine: "gemini" | "groq" | "heuristic";
   createdAt: string;
   fromCache: boolean;
 }
@@ -59,6 +72,7 @@ interface AnalysisEnvelope extends GeminiResponse {
 interface BatchResponse {
   mode: "batch";
   results: AnalysisEnvelope[];
+  errors?: { input: string; message: string }[];
 }
 
 const corsHeaders = {
@@ -150,26 +164,37 @@ function toUrl(raw: string) {
   return value;
 }
 
-const DOMAIN_SIGNALS: Record<string, { score: number; label: SourceCredibilityLabel; rationale: string }> = {
-  "apnews.com": { score: 92, label: "Established publisher", rationale: "Associated with an established wire-service newsroom." },
-  "bbc.com": { score: 90, label: "Established publisher", rationale: "Associated with an established public-service newsroom." },
-  "npr.org": { score: 90, label: "Established publisher", rationale: "Associated with an established public-media newsroom." },
-  "pbs.org": { score: 90, label: "Established publisher", rationale: "Associated with an established public-media newsroom." },
-  "reuters.com": { score: 94, label: "Established publisher", rationale: "Associated with an established international wire service." },
-  "theguardian.com": { score: 84, label: "Established publisher", rationale: "Associated with an established newspaper newsroom." },
-  "nytimes.com": { score: 86, label: "Established publisher", rationale: "Associated with an established newspaper newsroom." },
-  "washingtonpost.com": { score: 86, label: "Established publisher", rationale: "Associated with an established newspaper newsroom." },
-  "infowars.com": { score: 12, label: "Caution signal", rationale: "This domain has a strong history of publishing unreliable or sensational claims." },
-  "naturalnews.com": { score: 15, label: "Caution signal", rationale: "This domain has a strong history of publishing unsupported health claims." },
-  "beforeitsnews.com": { score: 15, label: "Caution signal", rationale: "This domain is associated with user-published and frequently unreliable claims." },
-};
+class RateLimitError extends Error {
+  constructor(public resetAt: string | null) {
+    super('Rate limit exceeded');
+  }
+}
 
-function domainSignal(url: string) {
+function scoreSourceCredibility(raw: string): SourceCredibility | null {
+  const value = raw.trim();
+  if (!/^https?:\/\/\S+/i.test(value) && !/^www\.\S+/i.test(value)) return null;
   try {
-    const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
-    const exact = DOMAIN_SIGNALS[hostname];
-    const signal = exact ?? { score: 50, label: "Limited signal" as const, rationale: "No configured reputation signal exists for this domain." };
-    return { domain: hostname, ...signal };
+    const url = new URL(/^www\./i.test(value) ? `https://${value}` : value);
+    const domain = url.hostname.toLowerCase().replace(/^www\./, '');
+    const official = ['gov.in', 'gov.uk', 'gov', 'who.int', 'nasa.gov', 'isro.gov.in', 'nih.gov'];
+    const established = ['reuters.com', 'apnews.com', 'bbc.com', 'theguardian.com', 'nytimes.com', 'washingtonpost.com'];
+    const recognized = ['thehindu.com', 'indianexpress.com', 'ndtv.com', 'hindustantimes.com', 'timesofindia.indiatimes.com'];
+    const signals = url.protocol === 'https:' ? ['HTTPS transport'] : [];
+    let tier: SourceCredibilityTier = 'Unknown';
+    let score = 50;
+    if (official.some((item) => domain === item || domain.endsWith(`.${item}`)) || domain.endsWith('.edu') || domain.endsWith('.ac.in')) {
+      tier = 'Official'; score = 85; signals.push('Official, government, health, or academic domain');
+    } else if (established.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Established'; score = 78; signals.push('Established editorial publisher');
+    } else if (recognized.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Recognized'; score = 68; signals.push('Recognized regional or national publisher');
+    } else if (domain.split('.').length < 2 || /(^|[.-])(viral|forward|truth|dailyalerts|breaking)[.-]/i.test(domain)) {
+      tier = 'Low-signal'; score = 35; signals.push('Domain has limited publisher-identification signals');
+    } else {
+      signals.push('Publisher is not in the current reference set');
+    }
+    if (url.protocol === 'https:') score = Math.min(100, score + 5);
+    return { score, tier, domain, signals };
   } catch {
     return null;
   }
@@ -236,6 +261,34 @@ function extractTitle(html: string) {
 }
 
 async function fetchUrlContext(url: string) {
+  const parsedUrl = new URL(url);
+  const hostname = parsedUrl.hostname.toLowerCase().replace(/\.$/, '');
+  const ipv4 = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)?.slice(1).map(Number);
+  const isPrivateIpv4 = ipv4 && (
+    ipv4[0] === 0 ||
+    ipv4[0] === 10 ||
+    ipv4[0] === 127 ||
+    (ipv4[0] === 169 && ipv4[1] === 254) ||
+    (ipv4[0] === 172 && ipv4[1] >= 16 && ipv4[1] <= 31) ||
+    (ipv4[0] === 192 && ipv4[1] === 168)
+  );
+  if (
+    !['http:', 'https:'].includes(parsedUrl.protocol) ||
+    parsedUrl.username ||
+    parsedUrl.password ||
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local') ||
+    hostname === 'metadata.google.internal' ||
+    hostname === '::1' ||
+    hostname.startsWith('fc') ||
+    hostname.startsWith('fd') ||
+    hostname.startsWith('fe80:') ||
+    Boolean(isPrivateIpv4)
+  ) {
+    throw new Error('Local and private network URLs are not supported');
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
 
@@ -404,6 +457,135 @@ async function callGemini(prompt: string, geminiApiKey: string) {
   return safeParseJson(generatedText) as GeminiResponse;
 }
 
+function decodeXml(value: string) {
+  return value.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+}
+
+async function searchClaimEvidence(claim: string): Promise<EvidenceLink[]> {
+  try {
+    const searchUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(claim)}&hl=en-IN&gl=IN&ceid=IN:en`;
+    const response = await fetch(searchUrl, { headers: { accept: 'application/rss+xml, application/xml' } });
+    if (!response.ok) return [];
+    const xml = await response.text();
+    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 2).map((match) => {
+      const item = match[1];
+      const title = item.match(/<title>([\s\S]*?)<\/title>/i)?.[1];
+      const url = item.match(/<link>([\s\S]*?)<\/link>/i)?.[1];
+      const publisher = item.match(/<source[^>]*>([\s\S]*?)<\/source>/i)?.[1];
+      return title && url ? { title: decodeXml(title).trim(), url: decodeXml(url).trim(), publisher: publisher ? decodeXml(publisher).trim() : null } : null;
+    }).filter((item): item is EvidenceLink => Boolean(item));
+  } catch {
+    return [];
+  }
+}
+
+async function enrichClaimsWithEvidence(claims: ClaimAnalysis[]) {
+  const selected = claims.slice(0, 4);
+  const evidence = await Promise.all(selected.map((claim) => searchClaimEvidence(claim.claim)));
+  return claims.map((claim, index) => ({ ...claim, evidence: evidence[index] ?? [] }));
+}
+
+async function countAnalyses() {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) return 0;
+  const response = await fetch(`${supabaseUrl}/rest/v1/analysis_history?select=id&limit=1`, {
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, Prefer: "count=exact" },
+  });
+  const range = response.headers.get("content-range");
+  return Number(range?.split("/")[1] ?? 0) || 0;
+}
+
+async function loadTrendingScans() {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) return [];
+  const response = await fetch(`${supabaseUrl}/rest/v1/scan_pages?select=payload&is_public=eq.true&order=created_at.desc&limit=40`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
+  if (!response.ok) return [];
+  const rows = await response.json();
+  return rows.map((row: { payload?: AnalysisEnvelope }) => row.payload).filter(Boolean).sort((a: AnalysisEnvelope, b: AnalysisEnvelope) => a.credibilityScore - b.credibilityScore).slice(0, 12);
+}
+
+async function storeFeedback(feedback: { scanId: string; rating: "up" | "down" }) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) throw new Error("Feedback storage is not configured");
+  const response = await fetch(`${supabaseUrl}/rest/v1/analysis_feedback`, {
+    method: "POST",
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify({ scan_id: feedback.scanId, rating: feedback.rating }),
+  });
+  if (!response.ok) throw new Error("Unable to save feedback");
+}
+
+async function callGeminiVision(prompt: string, imageData: string, mimeType: string, geminiApiKey: string) {
+  const model = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.5-flash";
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
+    body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mimeType, data: imageData.replace(/^data:[^;]+;base64,/, "") } }, { text: prompt }] }], generationConfig: { maxOutputTokens: 1200, responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA } }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const data = await response.json();
+  const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!generatedText) throw new Error("No response from Gemini Vision");
+  return safeParseJson(generatedText) as GeminiResponse;
+}
+
+async function callGeminiVisionWithRetry(prompt: string, imageData: string, mimeType: string, geminiApiKey: string, retries = 1) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await callGeminiVision(prompt, imageData, mimeType, geminiApiKey);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const isRateLimit = message.includes("429") || message.toLowerCase().includes("resource_exhausted");
+      if (isRateLimit || attempt === retries) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+async function callGeminiWithRetry(prompt: string, geminiApiKey: string, retries = 1) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await callGemini(prompt, geminiApiKey);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const isRateLimit = message.includes("429") || message.toLowerCase().includes("resource_exhausted");
+      if (isRateLimit || attempt === retries) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+async function callGroq(prompt: string, groqApiKey: string) {
+  const model = Deno.env.get("GROQ_MODEL") ?? "llama-3.3-70b-versatile";
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqApiKey}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: "You are a misinformation-analysis engine. Respond with ONLY valid JSON matching the required schema — no markdown fences, no commentary." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.3,
+      response_format: { type: "json_object" },
+    }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const data = await response.json();
+  const generatedText = data.choices?.[0]?.message?.content;
+  if (!generatedText) throw new Error("No response from Groq");
+  return safeParseJson(generatedText) as GeminiResponse;
+}
+
 function normalizeGeminiResult(value: GeminiResponse): GeminiResponse {
   const claims = Array.isArray(value.claims) ? value.claims : [];
 
@@ -488,7 +670,7 @@ async function storePublicScanPage(
       input_text: payload.input,
       input_url: payload.sourceUrl,
       payload,
-      is_public: true,
+      is_public: false,
       created_at: payload.createdAt,
     }),
   });
@@ -583,29 +765,35 @@ async function rateLimitScope(scopeKey: string) {
   return { allowed: Boolean(row?.allowed ?? true), resetAt: row?.reset_at ?? null };
 }
 
-async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
+async function analyzeSingle(rawInput: string, explicitKind?: InputKind, imageData?: string, mimeType = "image/jpeg", forceRefresh = false) {
   const input = normalizeInput(rawInput);
   const inputType = inferInputKind(input, explicitKind);
   const sourceUrl = inputType === "url" ? toUrl(input) : null;
-  const sourceCredibility = sourceUrl ? domainSignal(sourceUrl) : null;
 
   const prepared = {
     input,
     inputKind: inputType,
     sourceTitle: null as string | null,
     sourceDescription: null as string | null,
-    sourceExcerpt: input,
+    sourceExcerpt: inputType === "image" ? "[Image input — content extracted by Gemini Vision]" : input,
+    sourceCredibility: scoreSourceCredibility(input),
   };
 
   if (sourceUrl) {
-    const context = await fetchUrlContext(sourceUrl);
-    prepared.sourceTitle = context.sourceTitle;
-    prepared.sourceDescription = context.sourceDescription;
-    prepared.sourceExcerpt = context.sourceExcerpt || input;
+    try {
+      const context = await fetchUrlContext(sourceUrl);
+      prepared.sourceTitle = context.sourceTitle;
+      prepared.sourceDescription = context.sourceDescription;
+      prepared.sourceExcerpt = context.sourceExcerpt || input;
+    } catch (error) {
+      prepared.sourceDescription = error instanceof Error && error.message.includes('private network')
+        ? 'The URL was not fetched because it points to a local or private network address.'
+        : 'The URL could not be fetched; analysis is based on the submitted link.';
+    }
   }
 
-  const cacheKey = await hashValue(`${inputType}:${sourceUrl ?? ""}:${input}`);
-  const cached = await readCachedAnalysis(cacheKey);
+  const cacheKey = await hashValue(`${inputType}:${sourceUrl ?? ""}:${input}:${imageData ?? ""}`);
+  const cached = forceRefresh ? null : await readCachedAnalysis(cacheKey);
   if (cached) {
     return { ...cached, fromCache: true };
   }
@@ -613,11 +801,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
   const scopeKey = await hashValue(`truthlens:${inputType}:${sourceUrl ?? input}`);
   const rateLimit = await rateLimitScope(scopeKey);
   if (!rateLimit.allowed) {
-    const resetAt = rateLimit.resetAt ? Date.parse(rateLimit.resetAt) : Date.now() + 300000;
-    const retryAfterSeconds = Math.max(1, Math.ceil((resetAt - Date.now()) / 1000));
-    const error = new Error("Rate limit exceeded. Please try again when the window resets.");
-    Object.assign(error, { retryAfterSeconds });
-    throw error;
+    throw new RateLimitError(rateLimit.resetAt);
   }
 
   const prompt = buildPrompt({
@@ -637,25 +821,36 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
       throw new Error("Gemini API key not configured");
     }
 
-    analysis = normalizeGeminiResult(await callGemini(prompt, geminiApiKey));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn("Gemini unavailable, using heuristic fallback:", reason);
-    engine = "heuristic";
-    analysis = scoreTextHeuristically(prepared.sourceExcerpt, reason);
+    analysis = normalizeGeminiResult(inputType === "image" && imageData
+      ? await callGeminiVisionWithRetry(prompt, imageData, mimeType, geminiApiKey)
+      : await callGeminiWithRetry(prompt, geminiApiKey));
+  } catch (geminiError) {
+    const geminiReason = geminiError instanceof Error ? geminiError.message : String(geminiError);
+    console.warn("Gemini unavailable, trying Groq fallback:", geminiReason);
+
+    try {
+      const groqApiKey = Deno.env.get("GROQ_API_KEY");
+      if (!groqApiKey) {
+        throw new Error("Groq API key not configured");
+      }
+      analysis = normalizeGeminiResult(await callGroq(prompt, groqApiKey));
+      engine = "groq";
+    } catch (groqError) {
+      const groqReason = groqError instanceof Error ? groqError.message : String(groqError);
+      console.warn("Groq unavailable, using heuristic fallback:", groqReason);
+      engine = "heuristic";
+      analysis = scoreTextHeuristically(prepared.sourceExcerpt, `${geminiReason} / ${groqReason}`);
+    }
   }
 
-  if (sourceCredibility) {
-    const blendedScore = clamp(Math.round(analysis.credibilityScore * 0.8 + sourceCredibility.score * 0.2), 0, 100);
-    analysis = {
-      ...analysis,
-      credibilityScore: blendedScore,
-      riskLevel: blendedScore >= 70 ? "Low" : blendedScore >= 45 ? "Medium" : "High",
-      warnings: [
-        ...analysis.warnings,
-        `Publisher signal: ${sourceCredibility.label}. This is a domain-level heuristic, not proof that the article is true or false.`,
-      ],
-    };
+  analysis = { ...analysis, claims: await enrichClaimsWithEvidence(analysis.claims) };
+
+  if (prepared.sourceCredibility && inputType === "url") {
+    const blended = Math.round(analysis.credibilityScore * 0.75 + prepared.sourceCredibility.score * 0.25);
+    analysis = { ...analysis, credibilityScore: blended, riskLevel: blended >= 70 ? "Low" : blended >= 45 ? "Medium" : "High" };
+    if (prepared.sourceCredibility.tier === "Unknown" || prepared.sourceCredibility.tier === "Low-signal") {
+      analysis.warnings = [...analysis.warnings, "Publisher credibility is uncertain; the domain score is a signal, not proof that the claims are true."];
+    }
   }
 
   const envelope: AnalysisEnvelope = {
@@ -666,7 +861,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
     sourceTitle: prepared.sourceTitle,
     sourceDescription: prepared.sourceDescription,
     sourceExcerpt: prepared.sourceExcerpt,
-    ...(sourceCredibility ? { sourceCredibility } : {}),
+    sourceCredibility: prepared.sourceCredibility,
     engine,
     fromCache: false,
     createdAt: new Date().toISOString(),
@@ -685,12 +880,28 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
+  if (req.method === "GET") {
+    try {
+      if (new URL(req.url).searchParams.get("feed") === "trending") return jsonResponse({ results: await loadTrendingScans() });
+      return jsonResponse({ count: await countAnalyses() });
+    } catch (error) {
+      console.error("Unable to count analyses", error);
+      return jsonResponse({ count: 0 });
+    }
+  }
+
   if (req.method !== "POST") {
     return jsonResponse({ error: "Method not allowed" }, 405);
   }
 
   try {
     const payload = (await req.json()) as AnalyzeRequest;
+
+    if (payload.feedback) {
+      if (!payload.feedback.scanId || !["up", "down"].includes(payload.feedback.rating)) return jsonResponse({ error: "Invalid feedback" }, 400);
+      await storeFeedback(payload.feedback);
+      return jsonResponse({ ok: true });
+    }
 
     if (payload.mode === "batch" || Array.isArray(payload.items)) {
       const items = (payload.items ?? [])
@@ -702,26 +913,29 @@ Deno.serve(async (req: Request) => {
       }
 
       const results: AnalysisEnvelope[] = [];
+      const errors: { input: string; message: string }[] = [];
       for (const item of items) {
-        results.push(await analyzeSingle(item.input, item.inputType));
+        try {
+          results.push(await analyzeSingle(item.input, item.inputType));
+        } catch (error) {
+          errors.push({ input: item.input, message: error instanceof Error ? error.message : "Unable to analyze this item" });
+        }
       }
 
-      return jsonResponse({ mode: "batch", results } satisfies BatchResponse);
+      return jsonResponse({ mode: "batch", results, ...(errors.length ? { errors } : {}) } satisfies BatchResponse);
     }
 
-    const rawInput = normalizeInput(payload.input ?? payload.message ?? payload.url ?? "");
-    if (!rawInput) {
+    const rawInput = normalizeInput(payload.input ?? payload.message ?? payload.url ?? (payload.inputType === "image" ? "[Image input]" : ""));
+    if (!rawInput || (payload.inputType === "image" && !payload.imageData)) {
       return jsonResponse({ error: "Message or URL is required" }, 400);
     }
 
-    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput));
+    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput), payload.imageData, payload.mimeType, payload.forceRefresh);
     return jsonResponse(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";
     console.error("Error in analyze function:", error);
-    const retryAfterSeconds = typeof error === "object" && error !== null && "retryAfterSeconds" in error
-      ? Number((error as { retryAfterSeconds: number }).retryAfterSeconds)
-      : undefined;
-    return jsonResponse({ error: message, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) }, message.includes("Rate limit") ? 429 : 500);
+    if (error instanceof RateLimitError) return jsonResponse({ error: `${message}. Please wait before trying again.`, retryAt: error.resetAt }, 429);
+    return jsonResponse({ error: message }, 500);
   }
 });
