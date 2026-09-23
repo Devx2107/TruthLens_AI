@@ -27,6 +27,25 @@ function normalizeText(value: string) {
   return value.trim().replace(/\s+/g, ' ');
 }
 
+export function isAnalysisResult(value: unknown): value is AnalysisResult {
+  if (!value || typeof value !== 'object') return false;
+  const scan = value as Partial<AnalysisResult>;
+  return typeof scan.id === 'string' && typeof scan.input === 'string' &&
+    (scan.inputType === 'text' || scan.inputType === 'url') &&
+    typeof scan.credibilityScore === 'number' && Number.isFinite(scan.credibilityScore) && scan.credibilityScore >= 0 && scan.credibilityScore <= 100 &&
+    typeof scan.confidence === 'number' && Number.isFinite(scan.confidence) && scan.confidence >= 0 && scan.confidence <= 100 &&
+    (scan.riskLevel === 'Low' || scan.riskLevel === 'Medium' || scan.riskLevel === 'High') &&
+    (scan.engine === 'gemini' || scan.engine === 'heuristic') &&
+    Array.isArray(scan.claims) && scan.claims.every((claim) => claim && typeof claim.claim === 'string' &&
+      typeof claim.score === 'number' && Number.isFinite(claim.score) &&
+      typeof claim.confidence === 'number' && Number.isFinite(claim.confidence) &&
+      typeof claim.rationale === 'string' && typeof claim.verdict === 'string') &&
+    Array.isArray(scan.warnings) && scan.warnings.every((warning) => typeof warning === 'string') &&
+    Array.isArray(scan.manipulationTechniques) && scan.manipulationTechniques.every((item) => typeof item === 'string') &&
+    typeof scan.summary === 'string' && typeof scan.explanation === 'string' &&
+    typeof scan.createdAt === 'string';
+}
+
 function buildHeuristicClaims(input: string, score: number, confidence: number) {
   return input
     .split(/[.!?]\s+/)
@@ -106,10 +125,13 @@ async function postToEdgeFunction(payload: AnalyzeRequest) {
     throw new Error('Supabase is not configured');
   }
 
+  const { data } = await supabase!.auth.getSession();
+  const token = data.session?.access_token ?? import.meta.env.VITE_SUPABASE_ANON_KEY;
   const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze`, {
     method: 'POST',
+    signal: AbortSignal.timeout(payload.mode === 'batch' ? 300000 : 35000),
     headers: {
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
@@ -133,18 +155,13 @@ async function postToEdgeFunction(payload: AnalyzeRequest) {
 }
 
 export async function analyzeRequest(payload: AnalyzeRequest): Promise<AnalysisResult | BatchAnalysisResponse> {
-  try {
-    return await postToEdgeFunction(payload);
-  } catch (error) {
-    if (error instanceof AnalyzeRequestError && error.status === 429) {
-      throw error;
-    }
-
+  if (!hasSupabaseConfig) {
     if (payload.mode === 'batch' || Array.isArray(payload.items)) {
       const items = payload.items ?? [];
       return {
         mode: 'batch',
         results: items.map((item) => localAnalyzeOne(normalizeText(item.input), item.inputType)),
+        errors: [],
       };
     }
 
@@ -152,6 +169,15 @@ export async function analyzeRequest(payload: AnalyzeRequest): Promise<AnalysisR
     const kind = detectInputKind(text, payload.inputType);
     return localAnalyzeOne(text, kind);
   }
+  const response = await postToEdgeFunction(payload);
+  if ('results' in response) {
+    if (!Array.isArray(response.results) || !response.results.every(isAnalysisResult) || !Array.isArray(response.errors)) {
+      throw new AnalyzeRequestError('The analysis server returned an invalid batch response.', 502);
+    }
+  } else if (!isAnalysisResult(response)) {
+    throw new AnalyzeRequestError('The analysis server returned an invalid scan.', 502);
+  }
+  return response;
 }
 
 export async function fetchPublicScan(scanId: string) {
@@ -166,11 +192,10 @@ export async function fetchPublicScan(scanId: string) {
     .eq('is_public', true)
     .maybeSingle();
 
-  if (error || !data?.payload) {
-    return null;
-  }
+  if (error) throw new Error(`Shared scan could not be loaded: ${error.message}`);
+  if (!data?.payload) return null;
 
-  return data.payload as AnalysisResult;
+  return isAnalysisResult(data.payload) ? data.payload : null;
 }
 
 export async function saveAnalysisForUser(result: AnalysisResult, userId: string) {
@@ -190,7 +215,18 @@ export async function saveAnalysisForUser(result: AnalysisResult, userId: string
 
   // Public scan pages are created by the Edge Function with the service role.
   // Keep the client-side write scoped to the user's private history row.
-  await supabase.from('analysis_history').upsert(historyRow, { onConflict: 'scan_id' });
+  const { error } = await supabase.from('analysis_history').upsert(historyRow, { onConflict: 'scan_id' });
+  if (error) throw new Error(`History was not synced: ${error.message}`);
+}
+
+export async function publishScan(result: AnalysisResult): Promise<string> {
+  if (!hasSupabaseConfig) {
+    throw new AnalyzeRequestError('Supabase is not configured, so this scan cannot be shared yet.', 503);
+  }
+
+  const response = await postToEdgeFunction({ action: 'publish', scan: result }) as unknown as { ok?: boolean; scanId?: string };
+  if (!response.ok || typeof response.scanId !== 'string') throw new Error('The server did not confirm publication.');
+  return response.scanId;
 }
 
 export async function loadUserHistory(userId: string) {
@@ -206,10 +242,11 @@ export async function loadUserHistory(userId: string) {
     .limit(20);
 
   if (error || !data) {
+    if (error) throw new Error(`History could not be loaded: ${error.message}`);
     return [];
   }
 
   return data
-    .map((row) => row.payload as AnalysisResult)
-    .filter(Boolean);
+    .map((row) => row.payload as unknown)
+    .filter(isAnalysisResult);
 }

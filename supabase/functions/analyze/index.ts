@@ -10,12 +10,14 @@ interface AnalyzeItem {
 }
 
 interface AnalyzeRequest {
+  action?: "analyze" | "publish";
   mode?: "single" | "batch";
   input?: string;
   inputType?: InputKind;
   message?: string;
   url?: string;
   items?: AnalyzeItem[];
+  scan?: AnalysisEnvelope;
 }
 
 interface ClaimAnalysis {
@@ -59,6 +61,7 @@ interface AnalysisEnvelope extends GeminiResponse {
 interface BatchResponse {
   mode: "batch";
   results: AnalysisEnvelope[];
+  errors: { index: number; input: string; error: string; retryAfterSeconds?: number }[];
 }
 
 const corsHeaders = {
@@ -150,6 +153,109 @@ function toUrl(raw: string) {
   return value;
 }
 
+class RequestFailure extends Error {
+  constructor(message: string, readonly status: number, readonly retryAfterSeconds?: number) {
+    super(message);
+  }
+}
+
+function validateInput(input: unknown, kind: unknown): asserts input is string {
+  if (typeof input !== "string" || !input.trim() || input.length > 10000) {
+    throw new RequestFailure("Input must contain 1 to 10,000 characters.", 400);
+  }
+  if (kind !== undefined && kind !== "text" && kind !== "url") {
+    throw new RequestFailure("Input type must be text or url.", 400);
+  }
+  if (kind === "url" || (kind === undefined && /^(https?:\/\/|www\.)/i.test(input))) {
+    let candidate: URL;
+    try { candidate = new URL(toUrl(input)); }
+    catch { throw new RequestFailure("Enter a valid HTTP or HTTPS URL.", 400); }
+    if (!["http:", "https:"].includes(candidate.protocol) || !candidate.hostname) {
+      throw new RequestFailure("Only HTTP and HTTPS URLs are supported.", 400);
+    }
+  }
+}
+
+function assertPublicUrl(value: string) {
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new RequestFailure("Enter a valid HTTP or HTTPS URL.", 400); }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password ||
+      host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") ||
+      host.includes(":") ||
+      /^(0|10|127|169\.254|192\.168)\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    throw new RequestFailure("URL must point to a public website.", 400);
+  }
+  return url;
+}
+
+function publicIp(address: string) {
+  if (address.includes(":")) return /^[23][0-9a-f]*:/i.test(address) && !/^2001:db8:/i.test(address);
+  const parts = address.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b, c] = parts;
+  return !(a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || b === 0 && c <= 2)) ||
+    (a === 198 && (b === 18 || b === 19 || b === 51 && c === 100)) ||
+    (a === 203 && b === 0 && c === 113));
+}
+
+async function assertPublicDns(hostname: string) {
+  const lookups = await Promise.allSettled([
+    Deno.resolveDns(hostname, "A", { signal: AbortSignal.timeout(5000) }),
+    Deno.resolveDns(hostname, "AAAA", { signal: AbortSignal.timeout(5000) }),
+  ]);
+  const addresses = lookups.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+  if (!addresses.length || addresses.some((address) => !publicIp(address))) {
+    throw new RequestFailure("URL must resolve only to public network addresses.", 400);
+  }
+}
+
+async function fetchPublicPage(value: string) {
+  let url = assertPublicUrl(value);
+  for (let redirects = 0; redirects < 4; redirects++) {
+    await assertPublicDns(url.hostname);
+    const response = await fetch(url, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(8000),
+      headers: { accept: "text/html,application/xhtml+xml" },
+    });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get("location");
+      if (!location) throw new RequestFailure("Page redirect has no destination.", 502);
+      url = assertPublicUrl(new URL(location, url).href);
+      continue;
+    }
+    if (!response.ok) throw new RequestFailure(`Page fetch failed (${response.status}).`, 502);
+    if (!/text\/html|application\/xhtml\+xml/i.test(response.headers.get("content-type") ?? "")) {
+      throw new RequestFailure("URL does not contain an HTML page.", 400);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new RequestFailure("Page has no content.", 502);
+    const parts: Uint8Array[] = [];
+    let size = 0;
+    while (size < 1024 * 1024) {
+      const part = await reader.read();
+      if (part.done) break;
+      size += part.value.byteLength;
+      parts.push(part.value);
+    }
+    await reader.cancel();
+    const bytes = new Uint8Array(Math.min(size, 1024 * 1024));
+    let offset = 0;
+    for (const part of parts) {
+      bytes.set(part.subarray(0, bytes.length - offset), offset);
+      offset += Math.min(part.length, bytes.length - offset);
+      if (offset >= bytes.length) break;
+    }
+    return new TextDecoder().decode(bytes);
+  }
+  throw new RequestFailure("Too many page redirects.", 502);
+}
+
 const DOMAIN_SIGNALS: Record<string, { score: number; label: SourceCredibilityLabel; rationale: string }> = {
   "apnews.com": { score: 92, label: "Established publisher", rationale: "Associated with an established wire-service newsroom." },
   "bbc.com": { score: 90, label: "Established publisher", rationale: "Associated with an established public-service newsroom." },
@@ -236,23 +342,7 @@ function extractTitle(html: string) {
 }
 
 async function fetchUrlContext(url: string) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-
-  try {
-    const response = await fetch(url, {
-      headers: {
-        "user-agent": "TruthLensAI/1.0",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch URL (${response.status})`);
-    }
-
-    const html = await response.text();
+    const html = await fetchPublicPage(url);
     const sourceTitle = extractTitle(html) ?? extractMeta(html, "og:title");
     const sourceDescription = extractMeta(html, "description") ?? extractMeta(html, "og:description");
     const mainContent = extractMainContent(html);
@@ -263,9 +353,6 @@ async function fetchUrlContext(url: string) {
       sourceDescription,
       sourceExcerpt: text,
     };
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function buildPrompt(payload: {
@@ -308,6 +395,21 @@ function safeParseJson(text: string) {
   const trimmed = text.trim();
   const cleaned = trimmed.replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
   return JSON.parse(cleaned);
+}
+
+function validGeminiResponse(value: unknown): value is GeminiResponse {
+  if (!value || typeof value !== "object") return false;
+  const result = value as Partial<GeminiResponse>;
+  return typeof result.credibilityScore === "number" && Number.isFinite(result.credibilityScore) &&
+    typeof result.confidence === "number" && Number.isFinite(result.confidence) &&
+    ["Low", "Medium", "High"].includes(result.riskLevel ?? "") &&
+    Array.isArray(result.manipulationTechniques) && result.manipulationTechniques.every((item) => typeof item === "string") &&
+    Array.isArray(result.claims) && result.claims.every((claim) => claim &&
+      typeof claim.claim === "string" && typeof claim.score === "number" && Number.isFinite(claim.score) &&
+      typeof claim.confidence === "number" && Number.isFinite(claim.confidence) &&
+      ["Likely true", "Mixed", "Likely false"].includes(claim.verdict) && typeof claim.rationale === "string") &&
+    typeof result.summary === "string" && typeof result.explanation === "string" &&
+    Array.isArray(result.warnings) && result.warnings.every((item) => typeof item === "string");
 }
 
 function scoreTextHeuristically(text: string, reason?: string) {
@@ -366,7 +468,7 @@ function scoreTextHeuristically(text: string, reason?: string) {
     summary: "Heuristic fallback analysis was used because the live Gemini path was unavailable.",
     explanation:
       "This local fallback keeps the app usable during setup, but the best results come from the Supabase Edge Function calling Gemini.",
-    warnings: [reason ? `Gemini analysis failed: ${reason}` : "Configure Supabase and Gemini secrets to enable the full AI analysis path."],
+    warnings: [reason ? "Live AI analysis was unavailable. This is a heuristic estimate, not fact verification." : "Configure Supabase and Gemini secrets to enable the full AI analysis path."],
   } satisfies GeminiResponse;
 }
 
@@ -376,6 +478,7 @@ async function callGemini(prompt: string, geminiApiKey: string) {
 
   const response = await fetch(geminiUrl, {
     method: "POST",
+    signal: AbortSignal.timeout(20000),
     headers: {
       "Content-Type": "application/json",
       "x-goog-api-key": geminiApiKey,
@@ -383,7 +486,7 @@ async function callGemini(prompt: string, geminiApiKey: string) {
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
-        maxOutputTokens: 1200,
+        maxOutputTokens: 4096,
         responseMimeType: "application/json",
         responseSchema: RESPONSE_SCHEMA,
       },
@@ -401,7 +504,9 @@ async function callGemini(prompt: string, geminiApiKey: string) {
     throw new Error("No response from Gemini");
   }
 
-  return safeParseJson(generatedText) as GeminiResponse;
+  const parsed: unknown = safeParseJson(generatedText);
+  if (!validGeminiResponse(parsed)) throw new Error("Model returned an invalid analysis.");
+  return parsed;
 }
 
 function normalizeGeminiResult(value: GeminiResponse): GeminiResponse {
@@ -433,56 +538,26 @@ function normalizeGeminiResult(value: GeminiResponse): GeminiResponse {
   };
 }
 
-async function storeAnalysisRecord(
-  payload: Omit<AnalysisEnvelope, "fromCache" | "engine"> & { cacheKey: string },
-) {
+async function storePublicScanPage(payload: AnalysisEnvelope) {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
   if (!supabaseUrl || !serviceRoleKey) {
-    return;
+    throw new RequestFailure("Sharing is not configured.", 503);
   }
 
-  await fetch(`${supabaseUrl}/rest/v1/analysis_history`, {
+  const publicId = crypto.randomUUID();
+  const response = await fetch(`${supabaseUrl}/rest/v1/scan_pages`, {
     method: "POST",
+    signal: AbortSignal.timeout(10000),
     headers: {
       apikey: serviceRoleKey,
       Authorization: `Bearer ${serviceRoleKey}`,
       "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates,return=minimal",
+      Prefer: "return=minimal",
     },
     body: JSON.stringify({
-      scan_id: payload.id,
-      cache_key: payload.cacheKey,
-      input_kind: payload.inputType,
-      input_text: payload.input,
-      input_url: payload.sourceUrl,
-      payload,
-      created_at: payload.createdAt,
-    }),
-  });
-}
-
-async function storePublicScanPage(
-  payload: Omit<AnalysisEnvelope, "fromCache" | "engine"> & { cacheKey: string },
-) {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    return;
-  }
-
-  await fetch(`${supabaseUrl}/rest/v1/scan_pages`, {
-    method: "POST",
-    headers: {
-      apikey: serviceRoleKey,
-      Authorization: `Bearer ${serviceRoleKey}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates,return=minimal",
-    },
-    body: JSON.stringify({
-      scan_id: payload.id,
+      scan_id: publicId,
       user_id: null,
       input_kind: payload.inputType,
       input_text: payload.input,
@@ -492,6 +567,8 @@ async function storePublicScanPage(
       created_at: payload.createdAt,
     }),
   });
+  if (!response.ok) throw new RequestFailure("Unable to publish this scan.", 503);
+  return publicId;
 }
 
 async function readCachedAnalysis(cacheKey: string) {
@@ -509,6 +586,7 @@ async function readCachedAnalysis(cacheKey: string) {
   url.searchParams.set("limit", "1");
 
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(10000),
     headers: {
       apikey: serviceRoleKey,
       Authorization: `Bearer ${serviceRoleKey}`,
@@ -534,6 +612,7 @@ async function writeCache(cacheKey: string, payload: AnalysisEnvelope) {
 
   await fetch(`${supabaseUrl}/rest/v1/analysis_cache`, {
     method: "POST",
+    signal: AbortSignal.timeout(10000),
     headers: {
       apikey: serviceRoleKey,
       Authorization: `Bearer ${serviceRoleKey}`,
@@ -557,11 +636,12 @@ async function rateLimitScope(scopeKey: string) {
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
   if (!supabaseUrl || !serviceRoleKey) {
-    return { allowed: true, resetAt: null as string | null };
+    throw new RequestFailure("Rate limiting is not configured.", 503);
   }
 
   const response = await fetch(`${supabaseUrl}/rest/v1/rpc/check_analysis_rate_limit`, {
     method: "POST",
+    signal: AbortSignal.timeout(10000),
     headers: {
       apikey: serviceRoleKey,
       Authorization: `Bearer ${serviceRoleKey}`,
@@ -575,19 +655,34 @@ async function rateLimitScope(scopeKey: string) {
   });
 
   if (!response.ok) {
-    return { allowed: true, resetAt: null as string | null };
+    throw new RequestFailure("Rate limiting is unavailable.", 503);
   }
 
   const payload = await response.json();
   const row = Array.isArray(payload) ? payload[0] : payload;
-  return { allowed: Boolean(row?.allowed ?? true), resetAt: row?.reset_at ?? null };
+  if (typeof row?.allowed !== "boolean") throw new RequestFailure("Rate limiting is unavailable.", 503);
+  return { allowed: row.allowed, resetAt: row?.reset_at ?? null };
 }
 
-async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
+async function analyzeSingle(rawInput: string, explicitKind?: InputKind, callerScope = "unknown") {
   const input = normalizeInput(rawInput);
   const inputType = inferInputKind(input, explicitKind);
   const sourceUrl = inputType === "url" ? toUrl(input) : null;
+  if (sourceUrl) assertPublicUrl(sourceUrl);
   const sourceCredibility = sourceUrl ? domainSignal(sourceUrl) : null;
+
+  const rateLimit = await rateLimitScope(callerScope);
+  if (!rateLimit.allowed) {
+    const resetAt = rateLimit.resetAt ? Date.parse(rateLimit.resetAt) : Date.now() + 300000;
+    throw new RequestFailure("Rate limit exceeded. Please try again when the window resets.", 429,
+      Math.max(1, Math.ceil((resetAt - Date.now()) / 1000)));
+  }
+
+  const cacheKey = await hashValue(`${inputType}:${sourceUrl ?? ""}:${input}`);
+  const cached = await readCachedAnalysis(cacheKey).catch(() => null);
+  if (cached && cached.engine === "gemini") {
+    return { ...cached, id: crypto.randomUUID(), createdAt: new Date().toISOString(), fromCache: true };
+  }
 
   const prepared = {
     input,
@@ -602,22 +697,6 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
     prepared.sourceTitle = context.sourceTitle;
     prepared.sourceDescription = context.sourceDescription;
     prepared.sourceExcerpt = context.sourceExcerpt || input;
-  }
-
-  const cacheKey = await hashValue(`${inputType}:${sourceUrl ?? ""}:${input}`);
-  const cached = await readCachedAnalysis(cacheKey);
-  if (cached) {
-    return { ...cached, fromCache: true };
-  }
-
-  const scopeKey = await hashValue(`truthlens:${inputType}:${sourceUrl ?? input}`);
-  const rateLimit = await rateLimitScope(scopeKey);
-  if (!rateLimit.allowed) {
-    const resetAt = rateLimit.resetAt ? Date.parse(rateLimit.resetAt) : Date.now() + 300000;
-    const retryAfterSeconds = Math.max(1, Math.ceil((resetAt - Date.now()) / 1000));
-    const error = new Error("Rate limit exceeded. Please try again when the window resets.");
-    Object.assign(error, { retryAfterSeconds });
-    throw error;
   }
 
   const prompt = buildPrompt({
@@ -673,10 +752,7 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
     ...analysis,
   };
 
-  await writeCache(cacheKey, envelope);
-  await storeAnalysisRecord({ ...envelope, cacheKey });
-  await storePublicScanPage({ ...envelope, cacheKey });
-
+  if (engine === "gemini") await writeCache(cacheKey, envelope).catch(() => undefined);
   return envelope;
 }
 
@@ -691,37 +767,61 @@ Deno.serve(async (req: Request) => {
 
   try {
     const payload = (await req.json()) as AnalyzeRequest;
+    if (!payload || typeof payload !== "object") throw new RequestFailure("A JSON object is required.", 400);
+    const caller = req.headers.get("cf-connecting-ip") ?? req.headers.get("x-real-ip") ??
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    const callerScope = await hashValue(`caller:${caller}`);
+
+    if (payload.action === "publish") {
+      const publicationLimit = await rateLimitScope(callerScope);
+      if (!publicationLimit.allowed) throw new RequestFailure("Rate limit exceeded.", 429);
+      const scan = payload.scan;
+      if (!scan || typeof scan !== "object" || typeof scan.id !== "string" ||
+          typeof scan.input !== "string" || scan.input.length > 10000 ||
+          !["text", "url"].includes(scan.inputType) ||
+          !Number.isFinite(scan.credibilityScore) || scan.credibilityScore < 0 || scan.credibilityScore > 100 ||
+          !["Low", "Medium", "High"].includes(scan.riskLevel) ||
+          !["gemini", "heuristic"].includes(scan.engine) ||
+          !Array.isArray(scan.claims) || !Array.isArray(scan.warnings) ||
+          typeof scan.summary !== "string" || typeof scan.explanation !== "string" ||
+          !Number.isFinite(Date.parse(scan.createdAt))) {
+        throw new RequestFailure("A valid scan is required to publish it.", 400);
+      }
+      const scanId = await storePublicScanPage(scan);
+      return jsonResponse({ ok: true, scanId });
+    }
 
     if (payload.mode === "batch" || Array.isArray(payload.items)) {
-      const items = (payload.items ?? [])
-        .map((item) => ({ input: normalizeInput(item.input), inputType: inferInputKind(item.input, item.inputType) }))
-        .filter((item) => item.input.length > 0);
-
-      if (items.length === 0) {
-        return jsonResponse({ error: "At least one input is required" }, 400);
+      if (!Array.isArray(payload.items) || payload.items.length < 1 || payload.items.length > 10) {
+        throw new RequestFailure("Batch must contain 1 to 10 items.", 400);
       }
 
       const results: AnalysisEnvelope[] = [];
-      for (const item of items) {
-        results.push(await analyzeSingle(item.input, item.inputType));
+      const errors: BatchResponse["errors"] = [];
+      for (const [index, item] of payload.items.entries()) {
+        try {
+          validateInput(item?.input, item?.inputType);
+          results.push(await analyzeSingle(item.input, item.inputType, callerScope));
+        } catch (error) {
+          errors.push({ index, input: typeof item?.input === "string" ? item.input.slice(0, 100) : "",
+            error: error instanceof RequestFailure ? error.message : "Unable to analyze this item.",
+            ...(error instanceof RequestFailure && error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}) });
+        }
       }
 
-      return jsonResponse({ mode: "batch", results } satisfies BatchResponse);
+      return jsonResponse({ mode: "batch", results, errors } satisfies BatchResponse);
     }
 
-    const rawInput = normalizeInput(payload.input ?? payload.message ?? payload.url ?? "");
-    if (!rawInput) {
-      return jsonResponse({ error: "Message or URL is required" }, 400);
-    }
+    const rawInput = payload.input ?? payload.message ?? payload.url ?? "";
+    validateInput(rawInput, payload.inputType);
 
-    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput));
+    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput), callerScope);
     return jsonResponse(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Internal server error";
+    const message = error instanceof RequestFailure ? error.message : "Unable to complete this request.";
     console.error("Error in analyze function:", error);
-    const retryAfterSeconds = typeof error === "object" && error !== null && "retryAfterSeconds" in error
-      ? Number((error as { retryAfterSeconds: number }).retryAfterSeconds)
-      : undefined;
-    return jsonResponse({ error: message, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) }, message.includes("Rate limit") ? 429 : 500);
+    const retryAfterSeconds = error instanceof RequestFailure ? error.retryAfterSeconds : undefined;
+    return jsonResponse({ error: message, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) },
+      error instanceof RequestFailure ? error.status : error instanceof SyntaxError ? 400 : 500);
   }
 });

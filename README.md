@@ -12,7 +12,7 @@ The app is decision support, not an authority: scores are model-assisted estimat
 - Breaks longer inputs into individual claims with verdicts, confidence, rationale, and scores.
 - Supports single scans and one-input-per-line batch scans.
 - Saves scans locally, with optional Supabase Auth magic-link sign-in for synced history.
-- Publishes shareable `/scan/:id` pages and downloadable result cards.
+- Keeps scans private by default; `Share & copy link` explicitly publishes a `/scan/:id` page and copies its link.
 - Uses a local heuristic fallback when Supabase/Gemini is not configured.
 - Applies a server-side rate limit of 20 requests per five-minute scope window and shows a retry countdown in the UI.
 
@@ -76,7 +76,7 @@ Responses include `credibilityScore`, `confidence`, `riskLevel`, `claims`, `mani
 
 ## Data and privacy
 
-Local history stays in the browser. Signed-in history is stored per user in `analysis_history`. Public share pages are readable only when `is_public = true`. The service role is used by the Edge Function for cache and server-created records; client access is protected by RLS policies in the migration.
+Local history stays in the browser. Signed-in history is stored per user in `analysis_history`. Scans are not written to public `scan_pages` during analysis; the explicit `Share & copy link` action publishes one result with `is_public = true`. Public share pages are readable only when `is_public = true`. The service role is used only for cache and explicit publication; client access is protected by RLS policies in the migrations.
 
 ## Project layout
 
@@ -91,6 +91,18 @@ supabase/
   functions/analyze/      URL fetching, reputation, Gemini, caching, rate limit
   migrations/             Tables, rate-limit RPC, and RLS policies
 ```
+
+## Release preparation
+
+TruthLens is distributed primarily as a Chromium extension with a companion web app. The toolbar popup scans pasted text or the current page; selected text can be scanned from the right-click menu. Extension results are stored only in the browser's local extension storage.
+
+Apply both migrations in order: `202606290001_truthlens.sql`, then `202608230001_privacy_defaults.sql`. The second migration makes old public scan pages private, so existing public links stop resolving until shared again. Deploy the `analyze` Edge Function with `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`; optionally set `GEMINI_MODEL`. Keep the Gemini and service-role keys server-side.
+
+Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` for the web build. Deploy the static web build to Vercel; `vercel.json` rewrites direct `/scan/:id` visits to the app. Set the production site URL and allowed magic-link redirect origin in Supabase Auth.
+
+Set the same public Supabase values and `TRUTHLENS_WEB_APP_URL=https://your-site.example` when running `npm run extension:build`. The script produces `dist/truthlens-extension.zip` and an unpacked directory. Install the latter locally through Chrome or Edge's **Load unpacked** to smoke-test popup, current-page, right-click, and web navigation flows. The configured ZIP can then be submitted through your own store account.
+
+Batch requests accept 1–10 items and return `results` plus indexed `errors`; one failed item does not discard other results. Each input is limited to 10,000 characters. Sharing is explicit; `publish` returns a fresh public `scanId` only after the record is saved.
 
 ## License
 

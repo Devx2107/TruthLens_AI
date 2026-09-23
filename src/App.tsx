@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import ResultCard from './components/ResultCard';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
-import { AnalyzeRequestError, analyzeRequest, fetchPublicScan, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
+import { AnalyzeRequestError, analyzeRequest, detectInputKind, fetchPublicScan, loadUserHistory, publishScan, saveAnalysisForUser } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
 import { supabase, hasSupabaseConfig } from './lib/supabase';
 
@@ -56,7 +56,8 @@ const examplePool: { single: string; batch: string }[] = [
 function detectRoute(): RouteState {
   const match = window.location.pathname.match(/^\/scan\/([^/]+)$/i);
   if (match?.[1]) {
-    return { kind: 'scan', id: decodeURIComponent(match[1]) };
+    try { return { kind: 'scan', id: decodeURIComponent(match[1]) }; }
+    catch { return { kind: 'home' }; }
   }
 
   return { kind: 'home' };
@@ -112,6 +113,8 @@ function App() {
   const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [batchResults, setBatchResults] = useState<AnalysisResult[]>([]);
+  const [batchErrors, setBatchErrors] = useState<{ index: number; input: string; error: string; retryAfterSeconds?: number }[]>([]);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [history, setHistory] = useState<AnalysisResult[]>([]);
   const [sharedScan, setSharedScan] = useState<AnalysisResult | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -120,6 +123,7 @@ function App() {
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement>(null);
+  const activeUserRef = useRef<string | null>(null);
   const [footerVisible, setFooterVisible] = useState(false);
   const lastExampleIndex = useRef<number | null>(null);
 
@@ -147,14 +151,14 @@ function App() {
   useEffect(() => {
     const local = getLocalScan(route.kind === 'scan' ? route.id : '');
     if (route.kind !== 'scan') {
-      setHistory(loadLocalHistory());
       setSharedScan(null);
       setNotFound(false);
       return;
     }
 
-    if (local) {
-      setSharedScan(local);
+    const known = history.find((scan) => scan.id === route.id);
+    if (known || (!session && local)) {
+      setSharedScan(known ?? local);
       setNotFound(false);
       return;
     }
@@ -171,12 +175,16 @@ function App() {
       } else {
         setNotFound(true);
       }
+    }).catch((loadError) => {
+      if (cancelled) return;
+      setNotFound(true);
+      setError(loadError instanceof Error ? loadError.message : 'Shared scan could not be loaded.');
     });
 
     return () => {
       cancelled = true;
     };
-  }, [route]);
+  }, [route, session, history]);
 
   useEffect(() => {
     setHistory(loadLocalHistory());
@@ -191,25 +199,36 @@ function App() {
     const init = async () => {
       const { data } = await client.auth.getSession();
       const activeSession = data.session;
+      activeUserRef.current = activeSession?.user.id ?? null;
       setSession(activeSession ? { id: activeSession.user.id, email: activeSession.user.email ?? null } : null);
 
-      const localHistory = loadLocalHistory();
       if (activeSession) {
-        const remoteHistory = await loadUserHistory(activeSession.user.id);
-        setHistory(mergeHistory(remoteHistory, localHistory));
+        try {
+          const remoteHistory = await loadUserHistory(activeSession.user.id);
+          if (activeUserRef.current === activeSession.user.id) setHistory(remoteHistory);
+        } catch (historyError) { setAuthMessage(historyError instanceof Error ? historyError.message : 'History could not be loaded.'); }
       } else {
-        setHistory(localHistory);
+        setHistory(loadLocalHistory());
       }
     };
 
     void init();
 
-    const { data: authListener } = client.auth.onAuthStateChange(async (_event, nextSession) => {
+    const { data: authListener } = client.auth.onAuthStateChange((_event, nextSession) => {
       const next = nextSession ? { id: nextSession.user.id, email: nextSession.user.email ?? null } : null;
+      if (activeUserRef.current !== next?.id) {
+        setResult(null);
+        setSharedScan(null);
+      }
+      activeUserRef.current = next?.id ?? null;
       setSession(next);
+      setHistory(next ? [] : loadLocalHistory());
       if (next) {
-        const remoteHistory = await loadUserHistory(next.id);
-        setHistory((current) => mergeHistory(remoteHistory, current));
+        void loadUserHistory(next.id).then((remoteHistory) => {
+          void client.auth.getUser().then(({ data }) => {
+            if (data.user?.id === next.id) setHistory(remoteHistory);
+          });
+        }).catch((historyError) => setAuthMessage(historyError instanceof Error ? historyError.message : 'History could not be loaded.'));
       }
     });
 
@@ -243,16 +262,16 @@ function App() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  const currentResult = route.kind === 'scan' ? sharedScan : result;
+  const currentResult = route.kind === 'scan' ? sharedScan ?? (result?.id === route.id ? result : null) : result;
 
   const historyItems = useMemo(() => history.slice(0, 8), [history]);
 
   const persistScan = async (scan: AnalysisResult) => {
-    const merged = saveLocalScan(scan);
-    saveLocalHistory(merged);
+    if (!session) saveLocalScan(scan);
     setHistory((current) => mergeHistory([scan], current));
     if (session) {
-      await saveAnalysisForUser(scan, session.id);
+      try { await saveAnalysisForUser(scan, session.id); }
+      catch (historyError) { setError(historyError instanceof Error ? historyError.message : 'History was not synced.'); }
     }
   };
 
@@ -278,9 +297,11 @@ function App() {
     }
 
     setLoading(true);
+    setShareUrl(null);
     setLoadingStage(0);
     setResult(null);
     setBatchResults([]);
+    setBatchErrors([]);
 
     const interval = window.setInterval(() => {
       setLoadingStage((stage) => (stage + 1) % loadingStages.length);
@@ -299,12 +320,15 @@ function App() {
           : {
               mode: 'single',
               input: singleValue,
-              inputType: inputKind,
+              inputType: inputKind === 'url' ? 'url' : detectInputKind(singleValue),
             },
       );
 
       if ('results' in response) {
         setBatchResults(response.results);
+        setBatchErrors(response.errors);
+        const limited = response.errors.find((item) => item.retryAfterSeconds);
+        if (limited) setRetryAfterSeconds(limited.retryAfterSeconds ?? 0);
         await Promise.all(response.results.map((scan) => persistScan(scan)));
         setResult(response.results[0] ?? null);
       } else {
@@ -332,8 +356,15 @@ function App() {
   };
 
   const copyShareLink = async (scan: AnalysisResult) => {
-    const shareUrl = `${window.location.origin}/scan/${scan.id}`;
-    await copyText(shareUrl);
+    try {
+      const scanId = await publishScan(scan);
+      const link = `${window.location.origin}/scan/${encodeURIComponent(scanId)}`;
+      setShareUrl(link);
+      await copyText(link);
+      setError(null);
+    } catch (shareError) {
+      if (!shareUrl) setError(shareError instanceof Error ? shareError.message : 'Unable to publish this scan for sharing.');
+    }
   };
 
   const signIn = async () => {
@@ -362,8 +393,12 @@ function App() {
       return;
     }
 
-    await supabase.auth.signOut();
+    const { error: signOutError } = await supabase.auth.signOut();
+    if (signOutError) { setAuthMessage(signOutError.message); return; }
     setSession(null);
+    setHistory(loadLocalHistory());
+    setResult(null);
+    setSharedScan(null);
   };
 
   return (
@@ -489,6 +524,10 @@ function App() {
         </header>
 
         <main className="flex flex-1 flex-col gap-6">
+          {shareUrl && <div className="glass-panel rounded-2xl p-4 text-sm text-white" role="status">
+            Public link: <a className="break-all text-cyan-300 underline" href={shareUrl}>{shareUrl}</a>
+          </div>}
+          {route.kind === 'scan' && error && <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 p-4 text-sm text-rose-100" role="alert">{error}</p>}
           <section className="space-y-6">
             {route.kind === 'scan' ? (
               <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
@@ -509,9 +548,9 @@ function App() {
                     <ResultCard result={currentResult} onCopyLink={copyShareLink} />
                   ) : notFound ? (
                     <div className="rounded-[1.75rem] border border-dashed border-white/10 bg-white/5 p-8 text-center">
-                      <p className="text-xl font-bold text-white">This scan link has no saved data yet.</p>
+                      <p className="text-xl font-bold text-white">This scan was not found or has not been shared.</p>
                       <p className="mt-2 text-sm text-slate-300">
-                        The share page works best after a scan has been saved locally or synced to Supabase.
+                        Ask the scanner to use Share & copy link, then open the published URL.
                       </p>
                     </div>
                   ) : (
@@ -606,7 +645,7 @@ function App() {
 
                 {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} />}
 
-                {batchResults.length > 0 && mode === 'batch' && (
+                {(batchResults.length > 0 || batchErrors.length > 0) && mode === 'batch' && (
                   <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
                     <div className="mb-4 flex items-center justify-between gap-4">
                       <div>
@@ -618,6 +657,9 @@ function App() {
                       </span>
                     </div>
                     <div className="space-y-4">
+                      {batchErrors.map((item) => <p key={item.index} className="rounded-2xl border border-rose-500/20 bg-rose-500/10 p-4 text-sm text-rose-100">
+                        Item {item.index + 1}: {item.error}{item.retryAfterSeconds && retryAfterSeconds > 0 ? ` Try again in ${retryAfterSeconds}s.` : ''}
+                      </p>)}
                       {batchResults.map((scan) => (
                         <button
                           key={scan.id}
@@ -647,7 +689,7 @@ function App() {
                   <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Recent</p>
                   <h2 className="mt-1 text-xl font-bold text-white">Saved scans</h2>
                 </div>
-                <button
+                {!session && <button
                   type="button"
                   onClick={() => {
                     saveLocalHistory([]);
@@ -656,7 +698,7 @@ function App() {
                   className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
                 >
                   Clear local
-                </button>
+                </button>}
               </div>
 
               <div className="mt-4 space-y-3">

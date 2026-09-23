@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TruthLens AI</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header><img src="icons/icon48.png" width="32" height="32" alt=""><div><strong>TruthLens AI</strong><small>Check a claim or webpage</small></div></header>
+  <main>
+    <label for="input">Text or URL</label>
+    <textarea id="input" maxlength="10000" placeholder="Paste a claim or link"></textarea>
+    <button id="scan">Scan input</button>
+    <button id="page" class="secondary">Scan current page</button>
+    <p id="status" role="status"></p>
+    <section id="result" hidden></section>
+    <div class="footer"><button id="web" class="link">Open web app ↗</button></div>
+  </main>
+  <script src="config.js"></script><script src="popup.js"></script>
+</body>
+</html>

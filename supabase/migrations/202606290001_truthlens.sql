@@ -117,6 +117,16 @@ begin
   end if;
 
   if not exists (
+    select 1 from pg_policies where schemaname = 'public' and tablename = 'analysis_history' and policyname = 'Users can update their own history'
+  ) then
+    create policy "Users can update their own history"
+      on public.analysis_history
+      for update
+      using (auth.uid() = user_id)
+      with check (auth.uid() = user_id);
+  end if;
+
+  if not exists (
     select 1 from pg_policies where schemaname = 'public' and tablename = 'scan_pages' and policyname = 'Users can update their own scan pages'
   ) then
     create policy "Users can update their own scan pages"

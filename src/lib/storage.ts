@@ -1,4 +1,5 @@
 import type { AnalysisResult } from '../types';
+import { isAnalysisResult } from './analyze';
 
 const HISTORY_KEY = 'truthlens.history.v1';
 const THEME_KEY = 'truthlens.theme.v1';
@@ -16,11 +17,12 @@ function readJson<T>(key: string, fallback: T) {
 }
 
 function writeJson(key: string, value: unknown) {
-  localStorage.setItem(key, JSON.stringify(value));
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Browsers may disable local storage. */ }
 }
 
 export function loadLocalHistory() {
-  return readJson<AnalysisResult[]>(HISTORY_KEY, []);
+  const value = readJson<unknown>(HISTORY_KEY, []);
+  return Array.isArray(value) ? value.filter(isAnalysisResult) : [];
 }
 
 export function saveLocalHistory(scans: AnalysisResult[]) {
@@ -39,7 +41,7 @@ export function getLocalScan(scanId: string) {
 }
 
 export function getThemePreference(): ThemeMode {
-  return readJson<ThemeMode>(THEME_KEY, 'dark');
+  return readJson<ThemeMode>(THEME_KEY, 'dark') === 'light' ? 'light' : 'dark';
 }
 
 export function saveThemePreference(theme: ThemeMode) {

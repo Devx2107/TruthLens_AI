@@ -8,7 +8,10 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json"
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "extension:build": "python scripts/build_extension.py",
+    "extension:check": "python -m unittest discover -s tests",
+    "test": "node --test tests/backend.test.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

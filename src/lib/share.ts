@@ -10,7 +10,7 @@ function escapeXml(value: string) {
 }
 
 function wrapLines(text: string, max = 60, limit = 5) {
-  const words = text.split(/\s+/);
+  const words = text.split(/\s+/).flatMap((word) => word.match(new RegExp(`.{1,${max}}`, 'g')) ?? []);
   const lines: string[] = [];
   let current = '';
 
@@ -35,8 +35,8 @@ function wrapLines(text: string, max = 60, limit = 5) {
 export function createShareSvg(result: AnalysisResult) {
   const scoreColor = result.riskLevel === 'Low' ? '#22c55e' : result.riskLevel === 'Medium' ? '#eab308' : '#ef4444';
   const sourceLabel = result.sourceTitle || result.sourceUrl || 'TruthLens AI';
-  const summaryLines = wrapLines(result.summary || result.explanation || 'Analysis ready', 56, 4);
-  const explanationLines = wrapLines(result.explanation || '', 60, 4);
+  const summaryLines = wrapLines(result.summary || result.explanation || 'Analysis ready', 56, 2);
+  const explanationLines = wrapLines(result.explanation || '', 60, 3);
 
   return `
   <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
@@ -65,7 +65,7 @@ export function createShareSvg(result: AnalysisResult) {
 
     <rect x="360" y="200" width="760" height="220" rx="28" fill="#0f172a" fill-opacity="0.88" stroke="#1f2a44" stroke-width="2" />
     <text x="400" y="255" fill="#94a3b8" font-size="22" font-family="Inter, system-ui, sans-serif">Headline / source</text>
-    <text x="400" y="302" fill="#f8fafc" font-size="34" font-family="Inter, system-ui, sans-serif" font-weight="700">${escapeXml(sourceLabel).slice(0, 78)}</text>
+    <text x="400" y="302" fill="#f8fafc" font-size="34" font-family="Inter, system-ui, sans-serif" font-weight="700">${escapeXml(sourceLabel.slice(0, 42))}</text>
     ${summaryLines
       .map(
         (line, index) =>
@@ -75,12 +75,12 @@ export function createShareSvg(result: AnalysisResult) {
       )
       .join('')}
 
-    <rect x="80" y="460" width="1040" height="110" rx="24" fill="#0f172a" fill-opacity="0.78" stroke="#1f2a44" stroke-width="2" />
+    <rect x="80" y="450" width="1040" height="145" rx="24" fill="#0f172a" fill-opacity="0.78" stroke="#1f2a44" stroke-width="2" />
     <text x="110" y="502" fill="#94a3b8" font-size="20" font-family="Inter, system-ui, sans-serif">Explanation</text>
     ${explanationLines
       .map(
         (line, index) =>
-          `<text x="110" y="${532 + index * 24}" fill="#e2e8f0" font-size="20" font-family="Inter, system-ui, sans-serif">${escapeXml(
+          `<text x="110" y="${525 + index * 24}" fill="#e2e8f0" font-size="20" font-family="Inter, system-ui, sans-serif">${escapeXml(
             line,
           )}</text>`,
       )

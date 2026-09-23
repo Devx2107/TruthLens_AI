@@ -43,6 +43,7 @@ export interface AnalysisResult {
 export interface BatchAnalysisResponse {
   mode: 'batch';
   results: AnalysisResult[];
+  errors: { index: number; input: string; error: string; retryAfterSeconds?: number }[];
 }
 
 export interface AnalyzeItem {
@@ -51,12 +52,14 @@ export interface AnalyzeItem {
 }
 
 export interface AnalyzeRequest {
+  action?: 'analyze' | 'publish';
   mode?: AnalysisMode;
   input?: string;
   inputType?: InputKind;
   items?: AnalyzeItem[];
   message?: string;
   url?: string;
+  scan?: AnalysisResult;
 }
 
 export interface SessionSnapshot {
