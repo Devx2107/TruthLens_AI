@@ -9,6 +9,7 @@ void React;
 interface ResultCardProps {
   result: AnalysisResult;
   onCopyLink?: (result: AnalysisResult) => void;
+  onUnpublish?: (result: AnalysisResult) => void;
   onNewScan?: () => void;
   onRefresh?: () => void;
   onFeedback?: (rating: 'up' | 'down') => void;
@@ -32,8 +33,12 @@ function riskIcon(riskLevel: AnalysisResult['riskLevel']) {
   return <AlertCircle className="h-5 w-5 text-rose-400" />;
 }
 
-export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh, onFeedback }: ResultCardProps) {
+export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan, onRefresh, onFeedback }: ResultCardProps) {
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
+  const [shareError, setShareError] = useState<string | null>(null);
+  if (result.engine === 'heuristic') {
+    return <article className="glass-panel rounded-[2rem] border border-amber-400/30 p-6"><h3 className="text-xl font-bold text-slate-950 dark:text-white">This older scan was not AI verified</h3><p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Its previous score has been hidden because wording-only scoring can be misleading. Run a fresh scan to get a Groq or Gemini analysis.</p>{onRefresh && <button type="button" onClick={onRefresh} className="mt-4 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-700 dark:text-cyan-100">Rescan with AI</button>}</article>;
+  }
   return (
     <article className="glass-panel overflow-hidden rounded-[2rem] p-5 sm:p-6 shadow-[0_20px_80px_rgba(15,23,42,0.18)] animate-reveal-up">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -61,19 +66,18 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh, o
             {result.sourceDescription || result.summary}
           </p>
           {result.engine === 'groq' && <p className="rounded-2xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-100">Backup model used because Gemini was unavailable. Verify important claims independently.</p>}
-          {result.engine === 'heuristic' && <p className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-100">Limited local analysis — AI services were unavailable. This result is lower confidence; verify the claims independently.</p>}
         </div>
 
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => void downloadShareCardPng(result)}
+            onClick={() => { setShareError(null); void downloadShareCardPng(result).catch(() => setShareError('Unable to create the PNG. Please try again.')); }}
             className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 transition hover:-translate-y-0.5 hover:bg-white/15 dark:text-white"
           >
             <ShieldCheck className="h-4 w-4" />
             Download PNG
           </button>
-          <button type="button" onClick={() => void copyShareCardImage(result)} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white">
+          <button type="button" onClick={() => { setShareError(null); void copyShareCardImage(result).catch(() => setShareError('Clipboard image access is unavailable in this browser.')); }} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white">
             <Copy className="h-4 w-4" /> Copy share image
           </button>
           {result.fromCache && onRefresh && <button type="button" onClick={onRefresh} className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">Rescan fresh</button>}
@@ -85,11 +89,13 @@ export default function ResultCard({ result, onCopyLink, onNewScan, onRefresh, o
               className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 transition hover:-translate-y-0.5 hover:bg-white/15 dark:text-white"
             >
               <Link2 className="h-4 w-4" />
-              Copy link
+              {result.isPublic ? 'Copy public link' : 'Publish & copy link'}
             </button>
           )}
+          {onUnpublish && <button type="button" onClick={() => onUnpublish(result)} className="rounded-full border border-amber-400/30 bg-amber-400/10 px-4 py-2 text-sm font-semibold text-amber-700 dark:text-amber-100">Unpublish</button>}
         </div>
       </div>
+      {shareError && <p className="mt-3 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-sm text-rose-700 dark:text-rose-100">{shareError}</p>}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-6">

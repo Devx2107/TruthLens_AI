@@ -47,13 +47,15 @@ export interface AnalysisResult {
   warnings: string[];
   engine: AnalysisEngine;
   createdAt: string;
+  analyzedAt?: string;
   fromCache: boolean;
+  isPublic?: boolean;
 }
 
 export interface BatchAnalysisResponse {
   mode: 'batch';
   results: AnalysisResult[];
-  errors?: { input: string; message: string }[];
+  errors?: { input: string; message: string; code?: string }[];
 }
 
 export interface AnalyzeItem {

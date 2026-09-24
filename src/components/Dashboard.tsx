@@ -1,6 +1,7 @@
 import type { AnalysisResult } from '../types';
 
 export default function Dashboard({ history, onClear }: { history: AnalysisResult[]; onClear: () => void }) {
+  history = history.filter((scan) => scan.engine !== 'heuristic');
   const week = Date.now() - 7 * 86400000;
   const recent = history.filter((scan) => +new Date(scan.createdAt) >= week);
   const average = history.length ? Math.round(history.reduce((sum, scan) => sum + scan.credibilityScore, 0) / history.length) : 0;

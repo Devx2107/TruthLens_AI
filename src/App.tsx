@@ -24,7 +24,7 @@ import PolicyPage from './components/PolicyPage';
 import CompareView from './components/CompareView';
 import TrendingPage from './components/TrendingPage';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
-import { analyzeRequest, detectInputKind, fetchPublicScan, fetchTrendingScans, loadUsageCount, loadUserHistory, saveAnalysisForUser, submitAnalysisFeedback } from './lib/analyze';
+import { analyzeRequest, detectInputKind, fetchPublicScan, fetchTrendingScans, loadUsageCount, loadUserHistory, setScanPublished, submitAnalysisFeedback } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
 import { supabase, hasSupabaseConfig } from './lib/supabase';
 
@@ -32,7 +32,7 @@ void React;
 
 type RouteState = { kind: 'home' } | { kind: 'scan'; id: string } | { kind: 'privacy' } | { kind: 'terms' } | { kind: 'trending' };
 
-const loadingStages = ['Reading message', 'Checking sources', 'Scoring credibility'];
+const loadingStages = ['Reading message', 'Checking sources', 'Analyzing with Groq'];
 
 const examplePool: { single: string; batch: string }[] = [
   {
@@ -162,9 +162,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const local = getLocalScan(route.kind === 'scan' ? route.id : '');
+    const local = getLocalScan(route.kind === 'scan' ? route.id : '', session?.id);
     if (route.kind !== 'scan') {
-      setHistory(loadLocalHistory());
+      setHistory(loadLocalHistory(session?.id));
       setSharedScan(null);
       setNotFound(false);
       return;
@@ -184,7 +184,6 @@ function App() {
       if (cancelled) return;
       if (scan) {
         setSharedScan(scan);
-        saveLocalScan(scan);
       } else {
         setNotFound(true);
       }
@@ -193,7 +192,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [route]);
+  }, [route, session?.id]);
 
   useEffect(() => {
     if (route.kind !== 'trending') return;
@@ -235,12 +234,11 @@ function App() {
       const activeSession = data.session;
       setSession(activeSession ? { id: activeSession.user.id, email: activeSession.user.email ?? null } : null);
 
-      const localHistory = loadLocalHistory();
       if (activeSession) {
         const remoteHistory = await loadUserHistory(activeSession.user.id);
-        setHistory(mergeHistory(remoteHistory, localHistory));
+        setHistory(mergeHistory(remoteHistory, loadLocalHistory(activeSession.user.id)));
       } else {
-        setHistory(localHistory);
+        setHistory(loadLocalHistory());
       }
     };
 
@@ -251,8 +249,8 @@ function App() {
       setSession(next);
       if (next) {
         const remoteHistory = await loadUserHistory(next.id);
-        setHistory((current) => mergeHistory(remoteHistory, current));
-      }
+        setHistory(mergeHistory(remoteHistory, loadLocalHistory(next.id)));
+      } else setHistory(loadLocalHistory());
     });
 
     return () => {
@@ -290,13 +288,9 @@ function App() {
   const historyItems = useMemo(() => history.slice(0, 8), [history]);
 
   const persistScan = async (scan: AnalysisResult) => {
-    const merged = saveLocalScan(scan);
-    saveLocalHistory(merged);
+    saveLocalScan(scan, session?.id);
     setHistory((current) => mergeHistory([scan], current));
-    if (session) {
-      await saveAnalysisForUser(scan, session.id);
-    }
-    void loadUsageCount().then((count) => setUsageCount(count ?? loadLocalHistory().length));
+    void loadUsageCount().then((count) => setUsageCount(count ?? loadLocalHistory(session?.id).length));
   };
 
   const startAnalysis = async (event: FormEvent) => {
@@ -312,6 +306,14 @@ function App() {
 
     if (mode === 'batch' && batchValues.length === 0) {
       setError('Drop in at least one headline or link for batch mode.');
+      return;
+    }
+    if (batchValues.length > 10) {
+      setError('Batch mode accepts at most 10 items.');
+      return;
+    }
+    if ([singleValue, compareInput.trim(), ...batchValues].some((value) => value.length > 20_000)) {
+      setError('Each text or URL must be 20,000 characters or fewer.');
       return;
     }
 
@@ -393,11 +395,34 @@ function App() {
   const copyShareLink = async (scan: AnalysisResult) => {
     const shareUrl = `${window.location.origin}/scan/${scan.id}`;
     try {
+      if (!session) throw new Error('Sign in to publish and share a scan.');
+      if (!scan.isPublic) {
+        const approved = window.confirm('Publish this scan? Its submitted content and analysis will become public and may appear in Trending.');
+        if (!approved) return;
+        await setScanPublished(scan.id, true);
+        const published = { ...scan, isPublic: true };
+        setResult((current) => current?.id === scan.id ? published : current);
+        setSharedScan((current) => current?.id === scan.id ? published : current);
+        setHistory((current) => current.map((item) => item.id === scan.id ? published : item));
+        saveLocalScan(published, session.id);
+      }
       await copyText(shareUrl);
-      setAuthMessage('Link copied. It opens on this browser unless the scan is explicitly published.');
-    } catch {
-      setError('Unable to copy the link. Check your browser clipboard permissions.');
+      setAuthMessage('Public link copied.');
+    } catch (shareError) {
+      setError(shareError instanceof Error ? shareError.message : 'Unable to publish or copy the link.');
     }
+  };
+
+  const unpublishScan = async (scan: AnalysisResult) => {
+    try {
+      await setScanPublished(scan.id, false);
+      const privateScan = { ...scan, isPublic: false };
+      setResult((current) => current?.id === scan.id ? privateScan : current);
+      setSharedScan((current) => current?.id === scan.id ? privateScan : current);
+      setHistory((current) => current.map((item) => item.id === scan.id ? privateScan : item));
+      saveLocalScan(privateScan, session?.id);
+      setAuthMessage('Scan is private again.');
+    } catch (publishError) { setError(publishError instanceof Error ? publishError.message : 'Unable to unpublish scan.'); }
   };
 
   const signIn = async () => {
@@ -428,6 +453,7 @@ function App() {
 
     await supabase.auth.signOut();
     setSession(null);
+    setHistory(loadLocalHistory());
   };
 
   const startNewScan = () => {
@@ -447,10 +473,14 @@ function App() {
     setError(null);
     setLoading(true);
     try {
-      const refreshed = await analyzeRequest({ mode: 'single', input: scan.input, inputType: scan.inputType, forceRefresh: true });
+      if (scan.inputType === 'image' && !imageData) throw new Error('Choose the image again before rescanning it.');
+      const refreshed = await analyzeRequest({ mode: 'single', input: scan.input, inputType: scan.inputType, forceRefresh: true, ...(scan.inputType === 'image' ? { imageData, mimeType: imageMimeType } : {}) });
       if (!('results' in refreshed)) {
         setResult(refreshed);
+        setSharedScan(refreshed);
         await persistScan(refreshed);
+        window.history.pushState({}, '', `/scan/${refreshed.id}`);
+        setRoute({ kind: 'scan', id: refreshed.id });
       }
     } catch (refreshError) {
       setRetryAt(refreshError instanceof Error ? (refreshError as Error & { retryAt?: string | null }).retryAt ?? null : null);
@@ -470,6 +500,9 @@ function App() {
   };
 
   const readImage = (file: File) => {
+    if (file.size > 5 * 1024 * 1024) { setError('Image must be 5 MiB or smaller.'); return; }
+    if (!file.type.startsWith('image/')) { setError('Choose a supported image file.'); return; }
+    setError(null);
     setImageMimeType(file.type || 'image/jpeg');
     const reader = new FileReader();
     reader.onload = () => setImageData(String(reader.result));
@@ -629,7 +662,7 @@ function App() {
 
                 <div className="mt-5">
                   {currentResult ? (
-                    <ResultCard result={currentResult} onCopyLink={copyShareLink} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onFeedback={(rating) => void submitFeedback(currentResult, rating)} />
+                    <ResultCard key={currentResult.id} result={currentResult} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onFeedback={(rating) => void submitFeedback(currentResult, rating)} />
                   ) : notFound ? (
                     <div className="rounded-[1.75rem] border border-dashed border-slate-300 bg-slate-50 p-8 text-center dark:border-white/10 dark:bg-white/5">
                       <p className="text-xl font-bold text-slate-900 dark:text-white">This scan link has no saved data yet.</p>
@@ -733,7 +766,7 @@ function App() {
                   )}
                 </form>
 
-                {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onFeedback={(rating) => void submitFeedback(currentResult, rating)} />}
+                {currentResult && <ResultCard key={currentResult.id} result={currentResult} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onFeedback={(rating) => void submitFeedback(currentResult, rating)} />}
                 {compareResult && mode === 'compare' && currentResult && <CompareView left={currentResult} right={compareResult} />}
 
                 {batchResults.length > 0 && mode === 'batch' && (
@@ -744,7 +777,7 @@ function App() {
                         <h2 className="mt-1 text-xl font-bold text-slate-900 dark:text-white">{batchResults.length} items scanned</h2>
                       </div>
                       <span className="rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
-                        {batchResults.filter((scan) => scan.engine === 'gemini').length} AI backed
+                        {batchResults.filter((scan) => scan.engine === 'gemini' || scan.engine === 'groq').length} AI backed
                       </span>
                     </div>
                     <div className="space-y-4">
@@ -781,7 +814,7 @@ function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    saveLocalHistory([]);
+                    saveLocalHistory([], session?.id);
                     setHistory([]);
                   }}
                   className="rounded-full border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
@@ -830,7 +863,7 @@ function App() {
               </ul>
             </section>
 
-            <Dashboard history={history} onClear={() => { if (window.confirm('Clear all local scan history?')) { saveLocalHistory([]); setHistory([]); } }} />
+            <Dashboard history={history} onClear={() => { if (window.confirm('Clear all local scan history?')) { saveLocalHistory([], session?.id); setHistory([]); } }} />
         </main>
 
         <footer

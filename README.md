@@ -1,10 +1,10 @@
 # TruthLens AI
 
-A full-stack misinformation detection web app powered by Google Gemini AI. Analyze news headlines and messages to detect potential misinformation, manipulation techniques, and credibility scores.
+A full-stack misinformation detection web app powered primarily by Groq, with Google Gemini as a text backup and image-analysis provider.
 
 ## Features
 
-- Real-time misinformation analysis using Google Gemini AI
+- Real-time misinformation analysis using Groq, with Gemini backup
 - Credibility scoring (0-100)
 - Risk level assessment (Low/Medium/High)
 - Detection of manipulation techniques
@@ -23,13 +23,13 @@ A full-stack misinformation detection web app powered by Google Gemini AI. Analy
 
 **Backend:**
 - Supabase Edge Functions
-- Google Gemini AI API
+- Groq API and Google Gemini API
 
 ## Prerequisites
 
 Before running the app, you need:
 
-1. A Google Gemini API key
+1. A Groq API key and a Google Gemini API key for backup and image analysis
    - Get one at: https://aistudio.google.com/app/apikey
    - The backend currently targets `gemini-3.5-flash`. If Google deprecates this model later, update the model name in `supabase/functions/analyze/index.ts`.
 
@@ -41,23 +41,17 @@ Before running the app, you need:
 npm install
 ```
 
-### 2. Configure Google Gemini API Key
+### 2. Configure provider API keys
 
-The app requires a GEMINI_API_KEY environment variable. Configure it in your Supabase project:
+The app requires `GROQ_API_KEY` for text/URL analysis and `GEMINI_API_KEY` for image analysis and text backup. Configure them in your Supabase project:
 
 1. Go to your Supabase project dashboard
 2. Navigate to Edge Functions secrets
-3. Add `GEMINI_API_KEY` with your Google Gemini API key
+3. Add `GROQ_API_KEY` and `GEMINI_API_KEY` to the Edge Function secrets
 
-4. Add the optional Groq fallback secret:
+The analysis function tries Groq first for text and URLs, then Gemini. Images use Gemini Vision. If all applicable providers fail, the app returns a retryable error and does not invent a local credibility score. Set `GROQ_MODEL` to override the default `llama-3.3-70b-versatile` model.
 
-```bash
-supabase secrets set GROQ_API_KEY=your-groq-key-here
-```
-
-The analysis function tries Gemini (with one retry), then Groq, then its local
-heuristic fallback. Set `GROQ_MODEL` if you want to override the default
-`llama-3.3-70b-versatile` model.
+To let the backend retrieve article text, set `URL_FETCH_HOSTS` to a comma-separated allowlist such as `reuters.com,apnews.com,bbc.com`. Unlisted URLs are analyzed as submitted links without a server-side fetch. Every redirect must remain on the allowlist.
 
 ### 3. Run the Development Server
 
@@ -76,7 +70,7 @@ npm run build
 ## How to Use
 
 1. **Enter a message**: Paste any news headline or message into the text box
-2. **Click "Analyze Claim"**: The app will send the text to Google Gemini AI for analysis
+2. **Click "Analyze Claim"**: The app sends text and URLs to Groq, with Gemini available as backup
 3. **View results**: See the credibility score, risk level, manipulation techniques, and detailed explanation
 
 ### Try the Examples
@@ -108,7 +102,7 @@ Click the example buttons to quickly test the analyzer:
 
 ### POST /functions/v1/analyze
 
-Analyzes a message for misinformation using Google Gemini AI.
+Analyzes a message for misinformation using Groq first and Gemini as backup.
 
 **Request Body:**
 ```json
