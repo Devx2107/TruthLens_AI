@@ -23,10 +23,13 @@ import Dashboard from './components/Dashboard';
 import PolicyPage from './components/PolicyPage';
 import CompareView from './components/CompareView';
 import TrendingPage from './components/TrendingPage';
+import Watchlist from './components/Watchlist';
+import AdminFeedback from './components/AdminFeedback';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
 import { analyzeRequest, detectInputKind, fetchPublicScan, fetchTrendingScans, loadUsageCount, loadUserHistory, setScanPublished, submitAnalysisFeedback } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
 import { supabase, hasSupabaseConfig } from './lib/supabase';
+import { addWatchlistClaim, loadScanRevisions } from './lib/features';
 
 void React;
 
@@ -141,6 +144,9 @@ function App() {
   const accountRef = useRef<HTMLDivElement>(null);
   const scanFormRef = useRef<HTMLFormElement>(null);
   const [footerVisible, setFooterVisible] = useState(false);
+  const [outputLanguage, setOutputLanguage] = useState<'auto' | 'en' | 'hi'>('auto');
+  const [revisions, setRevisions] = useState<AnalysisResult[]>([]);
+  const [watchlistRefresh, setWatchlistRefresh] = useState(0);
   const lastExampleIndex = useRef<number | null>(null);
 
   const loadingMessage = loadingStages[loadingStage % loadingStages.length];
@@ -232,7 +238,7 @@ function App() {
     const init = async () => {
       const { data } = await client.auth.getSession();
       const activeSession = data.session;
-      setSession(activeSession ? { id: activeSession.user.id, email: activeSession.user.email ?? null } : null);
+      setSession(activeSession ? { id: activeSession.user.id, email: activeSession.user.email ?? null, isAdmin: activeSession.user.app_metadata?.role === 'admin' } : null);
 
       if (activeSession) {
         const remoteHistory = await loadUserHistory(activeSession.user.id);
@@ -245,7 +251,7 @@ function App() {
     void init();
 
     const { data: authListener } = client.auth.onAuthStateChange(async (_event, nextSession) => {
-      const next = nextSession ? { id: nextSession.user.id, email: nextSession.user.email ?? null } : null;
+      const next = nextSession ? { id: nextSession.user.id, email: nextSession.user.email ?? null, isAdmin: nextSession.user.app_metadata?.role === 'admin' } : null;
       setSession(next);
       if (next) {
         const remoteHistory = await loadUserHistory(next.id);
@@ -284,6 +290,11 @@ function App() {
   }, []);
 
   const currentResult = route.kind === 'scan' ? sharedScan : result;
+
+  useEffect(() => {
+    if (!currentResult || !session) { setRevisions([]); return; }
+    void loadScanRevisions(currentResult.id).then(setRevisions);
+  }, [currentResult, session]);
 
   const historyItems = useMemo(() => history.slice(0, 8), [history]);
 
@@ -343,8 +354,8 @@ function App() {
 
     try {
       const response = mode === 'compare' ? await Promise.all([
-        analyzeRequest({ mode: 'single', input: singleValue, inputType: inputKind }),
-        analyzeRequest({ mode: 'single', input: compareInput.trim(), inputType: compareInputKind }),
+        analyzeRequest({ mode: 'single', input: singleValue, inputType: inputKind, outputLanguage }),
+        analyzeRequest({ mode: 'single', input: compareInput.trim(), inputType: compareInputKind, outputLanguage }),
       ]) : await analyzeRequest(
         mode === 'batch'
           ? {
@@ -353,11 +364,13 @@ function App() {
                 input: item,
                 inputType: item.match(/^https?:\/\//i) || item.match(/^www\./i) ? 'url' : 'text',
               })),
+              outputLanguage,
             }
           : {
               mode: 'single',
               input: inputKind === 'image' ? '[Image input]' : singleValue,
               inputType: inputKind,
+              outputLanguage,
               ...(inputKind === 'image' ? { imageData, mimeType: imageMimeType } : {}),
             },
       );
@@ -474,7 +487,7 @@ function App() {
     setLoading(true);
     try {
       if (scan.inputType === 'image' && !imageData) throw new Error('Choose the image again before rescanning it.');
-      const refreshed = await analyzeRequest({ mode: 'single', input: scan.input, inputType: scan.inputType, forceRefresh: true, ...(scan.inputType === 'image' ? { imageData, mimeType: imageMimeType } : {}) });
+      const refreshed = await analyzeRequest({ mode: 'single', input: scan.input, inputType: scan.inputType, forceRefresh: true, outputLanguage, previousScanId: scan.id, ...(scan.inputType === 'image' ? { imageData, mimeType: imageMimeType } : {}) });
       if (!('results' in refreshed)) {
         setResult(refreshed);
         setSharedScan(refreshed);
@@ -490,8 +503,17 @@ function App() {
     }
   };
 
-  const submitFeedback = async (scan: AnalysisResult, rating: 'up' | 'down') => {
-    try { await submitAnalysisFeedback(scan.id, rating); } catch { setError('Feedback could not be saved. Please try again.'); }
+  const submitFeedback = async (scan: AnalysisResult, rating: 'up' | 'down', comment?: string) => {
+    try { await submitAnalysisFeedback(scan.id, rating, comment); } catch { setError('Feedback could not be saved. Please try again.'); }
+  };
+
+  const watchClaim = async (scan: AnalysisResult) => {
+    if (!session) { setError('Sign in to save claim watches.'); return; }
+    try {
+      await addWatchlistClaim(scan.claims[0]?.claim || scan.input);
+      setWatchlistRefresh((value) => value + 1);
+      setAuthMessage('Claim added to your watchlist.');
+    } catch (watchError) { setError(watchError instanceof Error ? watchError.message : 'Unable to watch this claim.'); }
   };
 
   const setInternalRoute = (kind: 'home' | 'privacy' | 'terms' | 'trending') => {
@@ -662,7 +684,7 @@ function App() {
 
                 <div className="mt-5">
                   {currentResult ? (
-                    <ResultCard key={currentResult.id} result={currentResult} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onFeedback={(rating) => void submitFeedback(currentResult, rating)} />
+                    <ResultCard key={currentResult.id} result={currentResult} revisions={revisions} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onWatch={(scan) => void watchClaim(scan)} onFeedback={(rating, comment) => void submitFeedback(currentResult, rating, comment)} />
                   ) : notFound ? (
                     <div className="rounded-[1.75rem] border border-dashed border-slate-300 bg-slate-50 p-8 text-center dark:border-white/10 dark:bg-white/5">
                       <p className="text-xl font-bold text-slate-900 dark:text-white">This scan link has no saved data yet.</p>
@@ -691,6 +713,8 @@ function App() {
                     <ModeButton active={inputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL input" onClick={() => setInputKind('url')} />
                     {mode !== 'batch' && <ModeButton active={inputKind === 'image'} icon={<Upload className="h-4 w-4" />} label="Image" onClick={() => setInputKind('image')} />}
                   </div>
+
+                  <label className="mt-4 flex max-w-xs flex-col gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">Analysis language<select value={outputLanguage} onChange={(event) => setOutputLanguage(event.target.value as 'auto' | 'en' | 'hi')} className="rounded-2xl border border-slate-300 bg-white px-4 py-3 font-normal text-slate-900 dark:border-white/10 dark:bg-slate-950/30 dark:text-white"><option value="auto">Match the input</option><option value="en">English</option><option value="hi">Hindi</option></select></label>
 
                   <div className="mt-5 space-y-3">
                     <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">
@@ -766,7 +790,7 @@ function App() {
                   )}
                 </form>
 
-                {currentResult && <ResultCard key={currentResult.id} result={currentResult} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onFeedback={(rating) => void submitFeedback(currentResult, rating)} />}
+                {currentResult && <ResultCard key={currentResult.id} result={currentResult} revisions={revisions} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onWatch={(scan) => void watchClaim(scan)} onFeedback={(rating, comment) => void submitFeedback(currentResult, rating, comment)} />}
                 {compareResult && mode === 'compare' && currentResult && <CompareView left={currentResult} right={compareResult} />}
 
                 {batchResults.length > 0 && mode === 'batch' && (
@@ -864,6 +888,8 @@ function App() {
             </section>
 
             <Dashboard history={history} onClear={() => { if (window.confirm('Clear all local scan history?')) { saveLocalHistory([], session?.id); setHistory([]); } }} />
+            <Watchlist enabled={Boolean(session)} refreshToken={watchlistRefresh} />
+            <AdminFeedback enabled={Boolean(session?.isAdmin)} />
         </main>
 
         <footer

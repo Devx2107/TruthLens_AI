@@ -11,6 +11,11 @@ A full-stack misinformation detection web app powered primarily by Groq, with Go
 - Visual credibility meter with color-coded indicators
 - Example messages for testing (fake and real news)
 - Clean, modern, responsive UI
+- Google Fact Check Tools matches with evidence strength labels
+- English, Hindi, or input-language reports
+- Signed-in claim watchlists and correction history
+- Rich source comparison, feedback review, PNG sharing, and printable PDF reports
+- Browser extension capture for selected text, headlines, and readable articles
 
 ## Tech Stack
 
@@ -49,6 +54,8 @@ The app requires `GROQ_API_KEY` for text/URL analysis and `GEMINI_API_KEY` for i
 2. Navigate to Edge Functions secrets
 3. Add `GROQ_API_KEY` and `GEMINI_API_KEY` to the Edge Function secrets
 
+Optionally add `GOOGLE_FACT_CHECK_API_KEY` to show verified matches from Google Fact Check Tools. Without it, analysis still works and shows related reporting only.
+
 The analysis function tries Groq first for text and URLs, then Gemini. Images use Gemini Vision. If all applicable providers fail, the app returns a retryable error and does not invent a local credibility score. Set `GROQ_MODEL` to override the default `llama-3.3-70b-versatile` model.
 
 To let the backend retrieve article text, set `URL_FETCH_HOSTS` to a comma-separated allowlist such as `reuters.com,apnews.com,bbc.com`. Unlisted URLs are analyzed as submitted links without a server-side fetch. Every redirect must remain on the allowlist.
@@ -60,6 +67,8 @@ npm run dev
 ```
 
 The app will be available at `http://localhost:5173`
+
+Apply `supabase/migrations/202609250001_feature_suite.sql` and redeploy the `analyze` function before using watchlists, correction history, feedback review, or fact-check matches. Admin review appears when the signed-in user's Supabase `app_metadata.role` is `admin`.
 
 ### 4. Build for Production
 

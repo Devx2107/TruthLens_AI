@@ -26,7 +26,9 @@ interface AnalyzeRequest {
   imageData?: string;
   mimeType?: string;
   forceRefresh?: boolean;
-  feedback?: { scanId: string; rating: "up" | "down" };
+  outputLanguage?: "auto" | "en" | "hi";
+  previousScanId?: string;
+  feedback?: { scanId: string; rating: "up" | "down"; comment?: string };
 }
 
 interface ClaimAnalysis {
@@ -42,6 +44,11 @@ interface EvidenceLink {
   title: string;
   url: string;
   publisher: string | null;
+  kind: "fact-check" | "primary" | "reporting";
+  strength: "Strong" | "Moderate" | "Related";
+  rating: string | null;
+  reviewDate: string | null;
+  claimText: string | null;
 }
 
 interface GeminiResponse {
@@ -53,6 +60,8 @@ interface GeminiResponse {
   summary: string;
   explanation: string;
   warnings: string[];
+  detectedLanguage?: string;
+  analysisLanguage?: string;
 }
 
 interface AnalysisEnvelope extends GeminiResponse {
@@ -68,6 +77,7 @@ interface AnalysisEnvelope extends GeminiResponse {
   createdAt: string;
   analyzedAt?: string;
   fromCache: boolean;
+  previousScanId?: string | null;
 }
 
 interface BatchResponse {
@@ -347,6 +357,7 @@ function buildPrompt(payload: {
   sourceTitle: string | null;
   sourceDescription: string | null;
   sourceExcerpt: string;
+  outputLanguage: "auto" | "en" | "hi";
 }) {
   const context = [
     `Input type: ${payload.inputKind}`,
@@ -357,7 +368,13 @@ function buildPrompt(payload: {
     .filter(Boolean)
     .join("\n");
 
-  return `You are TruthLens AI, a careful misinformation analysis assistant.
+  const languageRule = payload.outputLanguage === "hi"
+    ? "Write summary, explanation, rationales, and warnings in Hindi."
+    : payload.outputLanguage === "en"
+      ? "Write summary, explanation, rationales, and warnings in English."
+      : "Write summary, explanation, rationales, and warnings in the input's primary language.";
+
+  return `You are TruthLens AI, a careful multilingual misinformation analysis assistant.
 
 Evaluate the input below and return a structured JSON object only.
 
@@ -368,6 +385,7 @@ Rules:
 - Use "Low" for high credibility, "Medium" for mixed/uncertain, and "High" for low credibility or manipulation risk.
 - Focus on verifiable language, sensationalism, emotional manipulation, unsupported certainty, and missing evidence.
 - If this is a URL, prefer the page title, description, and excerpt; do not pretend you fully crawled the web.
+- ${languageRule}
 - Return JSON only and match the provided schema exactly.
 
 Input:
@@ -434,21 +452,53 @@ async function searchClaimEvidence(claim: string): Promise<EvidenceLink[]> {
     const response = await fetch(searchUrl, { headers: { accept: 'application/rss+xml, application/xml' } });
     if (!response.ok) return [];
     const xml = await response.text();
-    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 2).map((match) => {
+    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 2).flatMap((match): EvidenceLink[] => {
       const item = match[1];
       const title = item.match(/<title>([\s\S]*?)<\/title>/i)?.[1];
       const url = item.match(/<link>([\s\S]*?)<\/link>/i)?.[1];
       const publisher = item.match(/<source[^>]*>([\s\S]*?)<\/source>/i)?.[1];
-      return title && url ? { title: decodeXml(title).trim(), url: decodeXml(url).trim(), publisher: publisher ? decodeXml(publisher).trim() : null } : null;
-    }).filter((item): item is EvidenceLink => Boolean(item));
+      return title && url ? [{
+        title: decodeXml(title).trim(), url: decodeXml(url).trim(), publisher: publisher ? decodeXml(publisher).trim() : null,
+        kind: "reporting" as const, strength: "Related" as const, rating: null, reviewDate: null, claimText: null,
+      }] : [];
+    });
   } catch {
     return [];
   }
 }
 
+async function searchVerifiedFactChecks(claim: string): Promise<EvidenceLink[]> {
+  const apiKey = Deno.env.get("GOOGLE_FACT_CHECK_API_KEY");
+  if (!apiKey) return [];
+  try {
+    const url = new URL("https://factchecktools.googleapis.com/v1alpha1/claims:search");
+    url.searchParams.set("query", claim);
+    url.searchParams.set("pageSize", "3");
+    url.searchParams.set("key", apiKey);
+    const response = await providerFetch(url.toString(), { headers: { accept: "application/json" } }, 10_000);
+    if (!response.ok) return [];
+    const payload = await response.json();
+    return (payload.claims ?? []).flatMap((matched: { text?: string; claimReview?: Array<{ title?: string; url?: string; publisher?: { name?: string }; textualRating?: string; reviewDate?: string }> }) =>
+      (matched.claimReview ?? []).flatMap((review): EvidenceLink[] => review.title && review.url ? [{
+        title: String(review.title),
+        url: String(review.url),
+        publisher: review.publisher?.name ? String(review.publisher.name) : null,
+        kind: "fact-check" as const,
+        strength: "Strong" as const,
+        rating: review.textualRating ? String(review.textualRating) : null,
+        reviewDate: review.reviewDate ? String(review.reviewDate) : null,
+        claimText: matched.text ? String(matched.text) : null,
+      }] : []),
+    ).slice(0, 3);
+  } catch { return []; }
+}
+
 async function enrichClaimsWithEvidence(claims: ClaimAnalysis[]) {
   const selected = claims.slice(0, 4);
-  const evidence = await Promise.all(selected.map((claim) => searchClaimEvidence(claim.claim)));
+  const evidence = await Promise.all(selected.map(async (claim) => {
+    const [factChecks, reporting] = await Promise.all([searchVerifiedFactChecks(claim.claim), searchClaimEvidence(claim.claim)]);
+    return [...factChecks, ...reporting].slice(0, 5);
+  }));
   return claims.map((claim, index) => ({ ...claim, evidence: evidence[index] ?? [] }));
 }
 
@@ -473,14 +523,14 @@ async function loadTrendingScans() {
   return rows.map((row: { payload?: AnalysisEnvelope }) => row.payload).filter((item: AnalysisEnvelope | undefined): item is AnalysisEnvelope => Boolean(item) && item?.engine !== "heuristic").sort((a: AnalysisEnvelope, b: AnalysisEnvelope) => a.credibilityScore - b.credibilityScore).slice(0, 12);
 }
 
-async function storeFeedback(feedback: { scanId: string; rating: "up" | "down" }) {
+async function storeFeedback(feedback: { scanId: string; rating: "up" | "down"; comment?: string }, userId: string | null) {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !serviceRoleKey) throw new Error("Feedback storage is not configured");
   const response = await fetch(`${supabaseUrl}/rest/v1/analysis_feedback`, {
     method: "POST",
     headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-    body: JSON.stringify({ scan_id: feedback.scanId, rating: feedback.rating }),
+    body: JSON.stringify({ scan_id: feedback.scanId, rating: feedback.rating, comment: feedback.comment?.trim().slice(0, 1000) || null, user_id: userId }),
   });
   if (!response.ok) throw new Error("Unable to save feedback");
 }
@@ -622,6 +672,7 @@ async function persistAnalysis(
       p_input_url: result.sourceUrl,
       p_payload: result,
       p_created_at: result.createdAt,
+      p_previous_scan_id: result.previousScanId ?? null,
     }),
   });
   if (!response.ok) throw new Error("Unable to persist analysis");
@@ -712,7 +763,16 @@ async function rateLimitScope(scopeKey: string) {
   return { allowed: row?.allowed === true, resetAt: row?.reset_at ?? null };
 }
 
-async function analyzeSingle(rawInput: string, explicitKind: InputKind | undefined, imageData: string | undefined, mimeType: string | undefined, forceRefresh: boolean, scopeKey: string, userId: string | null) {
+function detectLanguage(text: string) {
+  if (/[\u0900-\u097F]/.test(text)) return "Hindi";
+  if (/[\u0980-\u09FF]/.test(text)) return "Bengali";
+  if (/[\u0B80-\u0BFF]/.test(text)) return "Tamil";
+  if (/[\u0C00-\u0C7F]/.test(text)) return "Telugu";
+  if (/[\u0A80-\u0AFF]/.test(text)) return "Gujarati";
+  return "English or other Latin-script language";
+}
+
+async function analyzeSingle(rawInput: string, explicitKind: InputKind | undefined, imageData: string | undefined, mimeType: string | undefined, forceRefresh: boolean, scopeKey: string, userId: string | null, outputLanguage: "auto" | "en" | "hi" = "auto", previousScanId?: string) {
   const input = normalizeInput(rawInput);
   if (input.length > MAX_INPUT_LENGTH) throw new ValidationError(`Input must be ${MAX_INPUT_LENGTH.toLocaleString()} characters or fewer`);
   const inputType = inferInputKind(input, explicitKind);
@@ -747,10 +807,10 @@ async function analyzeSingle(rawInput: string, explicitKind: InputKind | undefin
     }
   }
 
-  const cacheKey = await hashValue(`${CACHE_VERSION}:${inputType}:${sourceUrl ?? ""}:${input}:${imageData ?? ""}`);
+  const cacheKey = await hashValue(`${CACHE_VERSION}:${outputLanguage}:${inputType}:${sourceUrl ?? ""}:${input}:${imageData ?? ""}`);
   const cached = forceRefresh ? null : await readCachedAnalysis(cacheKey);
   if (cached) {
-    const envelope = { ...cached, id: crypto.randomUUID(), createdAt: new Date().toISOString(), analyzedAt: cached.analyzedAt ?? cached.createdAt, fromCache: true, isPublic: false };
+    const envelope = { ...cached, id: crypto.randomUUID(), createdAt: new Date().toISOString(), analyzedAt: cached.analyzedAt ?? cached.createdAt, fromCache: true, isPublic: false, previousScanId: previousScanId ?? null };
     await persistAnalysis({ ...envelope, cacheKey }, userId);
     return envelope;
   }
@@ -761,6 +821,7 @@ async function analyzeSingle(rawInput: string, explicitKind: InputKind | undefin
     sourceTitle: prepared.sourceTitle,
     sourceDescription: prepared.sourceDescription,
     sourceExcerpt: prepared.sourceExcerpt,
+    outputLanguage,
   });
 
   let engine: AnalysisEnvelope["engine"] = inputType === "image" ? "gemini" : "groq";
@@ -817,6 +878,9 @@ async function analyzeSingle(rawInput: string, explicitKind: InputKind | undefin
     fromCache: false,
     createdAt: new Date().toISOString(),
     analyzedAt: new Date().toISOString(),
+    detectedLanguage: detectLanguage(prepared.sourceExcerpt),
+    analysisLanguage: outputLanguage === "hi" ? "Hindi" : outputLanguage === "en" ? "English" : detectLanguage(prepared.sourceExcerpt),
+    previousScanId: previousScanId ?? null,
     ...analysis,
   };
 
@@ -867,7 +931,7 @@ Deno.serve(async (req: Request) => {
 
     if (payload.feedback) {
       if (!payload.feedback.scanId || !["up", "down"].includes(payload.feedback.rating)) return jsonResponse({ error: "Invalid feedback" }, 400);
-      await storeFeedback(payload.feedback);
+      await storeFeedback(payload.feedback, identity.userId);
       return jsonResponse({ ok: true });
     }
 
@@ -885,7 +949,7 @@ Deno.serve(async (req: Request) => {
       const errors: { input: string; message: string }[] = [];
       for (const item of items) {
         try {
-          results.push(await analyzeSingle(item.input, item.inputType, undefined, undefined, false, identity.scopeKey, identity.userId));
+          results.push(await analyzeSingle(item.input, item.inputType, undefined, undefined, false, identity.scopeKey, identity.userId, payload.outputLanguage ?? "auto"));
         } catch (error) {
           errors.push({ input: item.input, message: error instanceof Error ? error.message : "Unable to analyze this item" });
         }
@@ -899,7 +963,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "Message or URL is required" }, 400);
     }
 
-    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput), payload.imageData, payload.mimeType, Boolean(payload.forceRefresh), identity.scopeKey, identity.userId);
+    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput), payload.imageData, payload.mimeType, Boolean(payload.forceRefresh), identity.scopeKey, identity.userId, payload.outputLanguage ?? "auto", payload.previousScanId);
     return jsonResponse(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";

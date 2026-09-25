@@ -143,3 +143,16 @@ export async function copyShareCardImage(result: AnalysisResult) {
   }
 }
 
+function escapeHtml(value: string) {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+export function printAnalysisReport(result: AnalysisResult) {
+  const report = window.open('', '_blank');
+  if (!report) throw new Error('Allow popups to create a PDF report');
+  report.opener = null;
+  const claimRows = result.claims.map((claim) => `<section><h3>${escapeHtml(claim.claim)}</h3><p><strong>${claim.verdict}</strong> · ${claim.score}/100 · ${claim.confidence}% confidence</p><p>${escapeHtml(claim.rationale)}</p>${(claim.evidence ?? []).map((item) => `<p class="evidence">${escapeHtml(item.strength ?? 'Related')} ${escapeHtml(item.kind ?? 'reporting')}: <a href="${escapeHtml(item.url)}">${escapeHtml(item.title)}</a>${item.rating ? ` · Rating: ${escapeHtml(item.rating)}` : ''}</p>`).join('')}</section>`).join('');
+  report.document.write(`<!doctype html><html><head><title>TruthLens report</title><style>body{font:15px/1.55 system-ui;max-width:820px;margin:40px auto;padding:0 24px;color:#172033}header{border-bottom:3px solid #0891b2;padding-bottom:18px}h1{margin-bottom:4px}.score{font-size:34px;font-weight:800}.meta,.evidence{color:#526174}section{break-inside:avoid;border-bottom:1px solid #dbe3ea;padding:12px 0}a{color:#0369a1}@media print{button{display:none}}</style></head><body><header><h1>TruthLens AI analysis report</h1><p class="score">${result.credibilityScore}/100 · ${escapeHtml(result.riskLevel)} risk</p><p class="meta">Generated ${escapeHtml(new Date(result.createdAt).toLocaleString())} · Engine: ${escapeHtml(result.engine)} · Language: ${escapeHtml(result.analysisLanguage ?? 'Auto')}</p></header><h2>${escapeHtml(result.sourceTitle || result.input)}</h2><p>${escapeHtml(result.summary)}</p><h2>Claim analysis</h2>${claimRows}<h2>Explanation</h2><p>${escapeHtml(result.explanation)}</p><p class="meta">AI-assisted analysis can be wrong. Verify important decisions using the linked sources.</p><button onclick="window.print()">Print / Save as PDF</button><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250))</script></body></html>`);
+  report.document.close();
+}
+

@@ -26,6 +26,11 @@ export interface EvidenceLink {
   title: string;
   url: string;
   publisher: string | null;
+  kind?: 'fact-check' | 'primary' | 'reporting';
+  strength?: 'Strong' | 'Moderate' | 'Related';
+  rating?: string | null;
+  reviewDate?: string | null;
+  claimText?: string | null;
 }
 
 export interface AnalysisResult {
@@ -50,6 +55,9 @@ export interface AnalysisResult {
   analyzedAt?: string;
   fromCache: boolean;
   isPublic?: boolean;
+  detectedLanguage?: string;
+  analysisLanguage?: string;
+  previousScanId?: string | null;
 }
 
 export interface BatchAnalysisResponse {
@@ -73,7 +81,9 @@ export interface AnalyzeRequest {
   imageData?: string;
   mimeType?: string;
   forceRefresh?: boolean;
-  feedback?: { scanId: string; rating: 'up' | 'down' };
+  outputLanguage?: 'auto' | 'en' | 'hi';
+  previousScanId?: string;
+  feedback?: { scanId: string; rating: 'up' | 'down'; comment?: string };
 }
 
 export interface UsageStats {
@@ -88,4 +98,22 @@ export interface ComparisonResult {
 export interface SessionSnapshot {
   id: string;
   email: string | null;
+  isAdmin: boolean;
+}
+
+export interface WatchlistItem {
+  id: string;
+  query: string;
+  createdAt: string;
+  lastCheckedAt: string | null;
+  latestResult: AnalysisResult | null;
+}
+
+export interface FeedbackItem {
+  id: string;
+  scanId: string;
+  rating: 'up' | 'down';
+  comment: string | null;
+  status: 'open' | 'reviewed' | 'corrected';
+  createdAt: string;
 }

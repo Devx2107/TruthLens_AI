@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "check:extension": "node scripts/check-extension.mjs && node --check extension/background.js && node --check extension/popup.js && node --check extension/options.js",
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",

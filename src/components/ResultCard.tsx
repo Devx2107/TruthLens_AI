@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { AlertCircle, AlertTriangle, CheckCircle2, Copy, ExternalLink, Info, Link2, ShieldCheck, Sparkles, ThumbsDown, ThumbsUp } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Bell, CheckCircle2, Copy, ExternalLink, FileDown, History, Info, Link2, ShieldCheck, Sparkles, ThumbsDown, ThumbsUp } from 'lucide-react';
 import type { AnalysisResult } from '../types';
 import CredibilityMeter from './CredibilityMeter';
-import { copyShareCardImage, downloadShareCardPng } from '../lib/share';
+import { copyShareCardImage, downloadShareCardPng, printAnalysisReport } from '../lib/share';
 
 void React;
 
@@ -12,7 +12,9 @@ interface ResultCardProps {
   onUnpublish?: (result: AnalysisResult) => void;
   onNewScan?: () => void;
   onRefresh?: () => void;
-  onFeedback?: (rating: 'up' | 'down') => void;
+  onFeedback?: (rating: 'up' | 'down', comment?: string) => void;
+  onWatch?: (result: AnalysisResult) => void;
+  revisions?: AnalysisResult[];
 }
 
 function scoreTone(riskLevel: AnalysisResult['riskLevel']) {
@@ -33,8 +35,9 @@ function riskIcon(riskLevel: AnalysisResult['riskLevel']) {
   return <AlertCircle className="h-5 w-5 text-rose-400" />;
 }
 
-export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan, onRefresh, onFeedback }: ResultCardProps) {
+export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan, onRefresh, onFeedback, onWatch, revisions = [] }: ResultCardProps) {
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
+  const [feedbackComment, setFeedbackComment] = useState('');
   const [shareError, setShareError] = useState<string | null>(null);
   if (result.engine === 'heuristic') {
     return <article className="glass-panel rounded-[2rem] border border-amber-400/30 p-6"><h3 className="text-xl font-bold text-slate-950 dark:text-white">This older scan was not AI verified</h3><p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Its previous score has been hidden because wording-only scoring can be misleading. Run a fresh scan to get a Groq or Gemini analysis.</p>{onRefresh && <button type="button" onClick={onRefresh} className="mt-4 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-700 dark:text-cyan-100">Rescan with AI</button>}</article>;
@@ -50,7 +53,7 @@ export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan,
             </span>
             <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/5 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-white/5 dark:text-slate-300">
               <Sparkles className="h-3.5 w-3.5" />
-              {result.engine === 'gemini' ? 'Gemini analysis' : result.engine === 'groq' ? 'Groq backup model' : 'Limited local analysis'}
+              {result.engine === 'gemini' ? 'Gemini image analysis' : result.engine === 'groq' ? 'Groq analysis' : 'Limited local analysis'}
             </span>
             {result.fromCache && (
               <span className="inline-flex items-center gap-2 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-200">
@@ -65,7 +68,7 @@ export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan,
           <p className="max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-300">
             {result.sourceDescription || result.summary}
           </p>
-          {result.engine === 'groq' && <p className="rounded-2xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-100">Backup model used because Gemini was unavailable. Verify important claims independently.</p>}
+          {result.engine === 'groq' && <p className="rounded-2xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-100">Groq analyzed this claim. Check the cited reporting before relying on important conclusions.</p>}
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -80,6 +83,8 @@ export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan,
           <button type="button" onClick={() => { setShareError(null); void copyShareCardImage(result).catch(() => setShareError('Clipboard image access is unavailable in this browser.')); }} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white">
             <Copy className="h-4 w-4" /> Copy share image
           </button>
+          <button type="button" onClick={() => printAnalysisReport(result)} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white"><FileDown className="h-4 w-4" />Save PDF</button>
+          {onWatch && <button type="button" onClick={() => onWatch(result)} className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-700 dark:text-cyan-100"><Bell className="h-4 w-4" />Watch claim</button>}
           {result.fromCache && onRefresh && <button type="button" onClick={onRefresh} className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">Rescan fresh</button>}
           {onNewScan && <button type="button" onClick={onNewScan} className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white">New scan</button>}
           {onCopyLink && (
@@ -179,6 +184,7 @@ export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan,
                   {new Date(result.createdAt).toLocaleString()}
                 </dd>
               </div>
+              {result.detectedLanguage && <div className="flex items-start justify-between gap-4"><dt className="text-slate-500 dark:text-slate-400">Language</dt><dd className="font-medium text-slate-700 dark:text-slate-200">{result.detectedLanguage}{result.analysisLanguage ? ` / ${result.analysisLanguage}` : ''}</dd></div>}
             </dl>
           </section>
 
@@ -200,7 +206,7 @@ export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan,
                       <span className={`text-xs font-semibold ${verdictTone(claim.verdict)}`}>{claim.verdict}</span>
                     </div>
                     <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{claim.rationale}</p>
-                    {claim.evidence && claim.evidence.length > 0 && <div className="mt-3 space-y-1.5"><p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-300">Related reporting</p>{claim.evidence.map((item) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="flex items-start gap-1.5 text-xs text-cyan-300 hover:text-cyan-100"><ExternalLink className="mt-0.5 h-3 w-3 shrink-0" /><span>{item.title}{item.publisher ? ` · ${item.publisher}` : ''}</span></a>)}</div>}
+                    {claim.evidence && claim.evidence.length > 0 && <div className="mt-3 space-y-2"><p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-600 dark:text-cyan-300">Evidence and fact checks</p>{claim.evidence.map((item) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="block rounded-xl border border-cyan-400/20 bg-cyan-400/5 p-2 text-xs text-cyan-700 hover:bg-cyan-400/10 dark:text-cyan-200"><span className="flex items-start gap-1.5"><ExternalLink className="mt-0.5 h-3 w-3 shrink-0" /><span>{item.title}{item.publisher ? ` · ${item.publisher}` : ''}</span></span><span className="mt-1 flex flex-wrap gap-1.5 pl-4 text-[10px] uppercase tracking-wide"><span>{item.kind === 'fact-check' ? 'Verified fact check' : item.kind === 'primary' ? 'Primary source' : 'Related reporting'}</span><span>· {item.strength ?? 'Related'}</span>{item.rating && <span>· Rating: {item.rating}</span>}{item.reviewDate && <span>· {new Date(item.reviewDate).toLocaleDateString()}</span>}</span></a>)}</div>}
                     <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-indigo-400 transition-all duration-700"
@@ -241,7 +247,8 @@ export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan,
             </div>
             <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{result.explanation}</p>
           </section>
-          {onFeedback && <section className="flex items-center justify-between rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5"><p className="text-sm text-slate-600 dark:text-slate-300">Was this verdict useful?</p><div className="flex gap-2"><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('up'); onFeedback('up'); }} className={`rounded-full border p-2 ${feedback === 'up' ? 'border-emerald-400 text-emerald-300' : 'border-white/10 text-slate-400'}`} aria-label="Agree with verdict"><ThumbsUp className="h-4 w-4" /></button><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('down'); onFeedback('down'); }} className={`rounded-full border p-2 ${feedback === 'down' ? 'border-rose-400 text-rose-300' : 'border-white/10 text-slate-400'}`} aria-label="Disagree with verdict"><ThumbsDown className="h-4 w-4" /></button></div></section>}
+          {revisions.length > 1 && <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5"><div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200"><History className="h-4 w-4" />Correction history</div><div className="space-y-2">{revisions.map((revision, index) => <div key={`${revision.id}-${index}`} className="flex items-center justify-between rounded-xl border border-white/10 px-3 py-2 text-xs"><span>{new Date(revision.createdAt).toLocaleString()}</span><span className="font-semibold">{revision.credibilityScore}/100 · {revision.riskLevel}</span></div>)}</div></section>}
+          {onFeedback && <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5"><div className="flex items-center justify-between"><p className="text-sm text-slate-600 dark:text-slate-300">Was this verdict useful?</p><div className="flex gap-2"><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('up'); onFeedback('up', feedbackComment.trim() || undefined); }} className={`rounded-full border p-2 ${feedback === 'up' ? 'border-emerald-400 text-emerald-300' : 'border-white/10 text-slate-400'}`} aria-label="Agree with verdict"><ThumbsUp className="h-4 w-4" /></button><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('down'); onFeedback('down', feedbackComment.trim() || undefined); }} className={`rounded-full border p-2 ${feedback === 'down' ? 'border-rose-400 text-rose-300' : 'border-white/10 text-slate-400'}`} aria-label="Disagree with verdict"><ThumbsDown className="h-4 w-4" /></button></div></div><input value={feedbackComment} onChange={(event) => setFeedbackComment(event.target.value)} disabled={Boolean(feedback)} maxLength={500} placeholder="Optional note for the review team" className="mt-3 w-full rounded-xl border border-slate-300 bg-white/70 px-3 py-2 text-sm dark:border-white/10 dark:bg-slate-900/70" /></section>}
         </div>
       </div>
     </article>

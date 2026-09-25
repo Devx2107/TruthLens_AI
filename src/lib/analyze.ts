@@ -51,9 +51,9 @@ export async function loadUsageCount(): Promise<number | null> {
   } catch { return null; }
 }
 
-export async function submitAnalysisFeedback(scanId: string, rating: 'up' | 'down') {
+export async function submitAnalysisFeedback(scanId: string, rating: 'up' | 'down', comment?: string) {
   const response = await apiFetch('', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback: { scanId, rating } }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback: { scanId, rating, comment } }),
   });
   if (!response.ok) throw await responseError(response);
 }
