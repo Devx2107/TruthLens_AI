@@ -1,8 +1,15 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-type InputKind = "text" | "url";
+type InputKind = "text" | "url" | "image";
 type RiskLevel = "Low" | "Medium" | "High";
-type SourceCredibilityLabel = "Established publisher" | "Limited signal" | "Caution signal";
+type SourceCredibilityTier = "Official" | "Established" | "Recognized" | "Unknown" | "Low-signal";
+
+interface SourceCredibility {
+  score: number;
+  tier: SourceCredibilityTier;
+  domain: string;
+  signals: string[];
+}
 
 interface AnalyzeItem {
   input: string;
@@ -16,6 +23,12 @@ interface AnalyzeRequest {
   message?: string;
   url?: string;
   items?: AnalyzeItem[];
+  imageData?: string;
+  mimeType?: string;
+  forceRefresh?: boolean;
+  outputLanguage?: "auto" | "en" | "hi";
+  previousScanId?: string;
+  feedback?: { scanId: string; rating: "up" | "down"; comment?: string };
 }
 
 interface ClaimAnalysis {
@@ -24,6 +37,18 @@ interface ClaimAnalysis {
   confidence: number;
   verdict: "Likely true" | "Mixed" | "Likely false";
   rationale: string;
+  evidence?: EvidenceLink[];
+}
+
+interface EvidenceLink {
+  title: string;
+  url: string;
+  publisher: string | null;
+  kind: "fact-check" | "primary" | "reporting";
+  strength: "Strong" | "Moderate" | "Related";
+  rating: string | null;
+  reviewDate: string | null;
+  claimText: string | null;
 }
 
 interface GeminiResponse {
@@ -35,6 +60,8 @@ interface GeminiResponse {
   summary: string;
   explanation: string;
   warnings: string[];
+  detectedLanguage?: string;
+  analysisLanguage?: string;
 }
 
 interface AnalysisEnvelope extends GeminiResponse {
@@ -45,20 +72,18 @@ interface AnalysisEnvelope extends GeminiResponse {
   sourceTitle: string | null;
   sourceDescription: string | null;
   sourceExcerpt: string;
-  sourceCredibility?: {
-    domain: string;
-    score: number;
-    label: SourceCredibilityLabel;
-    rationale: string;
-  };
-  engine: "gemini" | "heuristic";
+  sourceCredibility: SourceCredibility | null;
+  engine: "gemini" | "groq" | "heuristic";
   createdAt: string;
+  analyzedAt?: string;
   fromCache: boolean;
+  previousScanId?: string | null;
 }
 
 interface BatchResponse {
   mode: "batch";
   results: AnalysisEnvelope[];
+  errors?: { input: string; message: string }[];
 }
 
 const corsHeaders = {
@@ -66,6 +91,14 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
+
+const MAX_INPUT_LENGTH = 20_000;
+const MAX_BATCH_SIZE = 10;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const CACHE_VERSION = "groq-primary-v2";
+
+class AnalysisUnavailableError extends Error {}
+class ValidationError extends Error {}
 
 const RESPONSE_SCHEMA = {
   type: "OBJECT",
@@ -150,26 +183,37 @@ function toUrl(raw: string) {
   return value;
 }
 
-const DOMAIN_SIGNALS: Record<string, { score: number; label: SourceCredibilityLabel; rationale: string }> = {
-  "apnews.com": { score: 92, label: "Established publisher", rationale: "Associated with an established wire-service newsroom." },
-  "bbc.com": { score: 90, label: "Established publisher", rationale: "Associated with an established public-service newsroom." },
-  "npr.org": { score: 90, label: "Established publisher", rationale: "Associated with an established public-media newsroom." },
-  "pbs.org": { score: 90, label: "Established publisher", rationale: "Associated with an established public-media newsroom." },
-  "reuters.com": { score: 94, label: "Established publisher", rationale: "Associated with an established international wire service." },
-  "theguardian.com": { score: 84, label: "Established publisher", rationale: "Associated with an established newspaper newsroom." },
-  "nytimes.com": { score: 86, label: "Established publisher", rationale: "Associated with an established newspaper newsroom." },
-  "washingtonpost.com": { score: 86, label: "Established publisher", rationale: "Associated with an established newspaper newsroom." },
-  "infowars.com": { score: 12, label: "Caution signal", rationale: "This domain has a strong history of publishing unreliable or sensational claims." },
-  "naturalnews.com": { score: 15, label: "Caution signal", rationale: "This domain has a strong history of publishing unsupported health claims." },
-  "beforeitsnews.com": { score: 15, label: "Caution signal", rationale: "This domain is associated with user-published and frequently unreliable claims." },
-};
+class RateLimitError extends Error {
+  constructor(public resetAt: string | null) {
+    super('Rate limit exceeded');
+  }
+}
 
-function domainSignal(url: string) {
+function scoreSourceCredibility(raw: string): SourceCredibility | null {
+  const value = raw.trim();
+  if (!/^https?:\/\/\S+/i.test(value) && !/^www\.\S+/i.test(value)) return null;
   try {
-    const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
-    const exact = DOMAIN_SIGNALS[hostname];
-    const signal = exact ?? { score: 50, label: "Limited signal" as const, rationale: "No configured reputation signal exists for this domain." };
-    return { domain: hostname, ...signal };
+    const url = new URL(/^www\./i.test(value) ? `https://${value}` : value);
+    const domain = url.hostname.toLowerCase().replace(/^www\./, '');
+    const official = ['gov.in', 'gov.uk', 'gov', 'who.int', 'nasa.gov', 'isro.gov.in', 'nih.gov'];
+    const established = ['reuters.com', 'apnews.com', 'bbc.com', 'theguardian.com', 'nytimes.com', 'washingtonpost.com'];
+    const recognized = ['thehindu.com', 'indianexpress.com', 'ndtv.com', 'hindustantimes.com', 'timesofindia.indiatimes.com'];
+    const signals = url.protocol === 'https:' ? ['HTTPS transport'] : [];
+    let tier: SourceCredibilityTier = 'Unknown';
+    let score = 50;
+    if (official.some((item) => domain === item || domain.endsWith(`.${item}`)) || domain.endsWith('.edu') || domain.endsWith('.ac.in')) {
+      tier = 'Official'; score = 85; signals.push('Official, government, health, or academic domain');
+    } else if (established.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Established'; score = 78; signals.push('Established editorial publisher');
+    } else if (recognized.some((item) => domain === item || domain.endsWith(`.${item}`))) {
+      tier = 'Recognized'; score = 68; signals.push('Recognized regional or national publisher');
+    } else if (domain.split('.').length < 2 || /(^|[.-])(viral|forward|truth|dailyalerts|breaking)[.-]/i.test(domain)) {
+      tier = 'Low-signal'; score = 35; signals.push('Domain has limited publisher-identification signals');
+    } else {
+      signals.push('Publisher is not in the current reference set');
+    }
+    if (url.protocol === 'https:') score = Math.min(100, score + 5);
+    return { score, tier, domain, signals };
   } catch {
     return null;
   }
@@ -235,37 +279,76 @@ function extractTitle(html: string) {
   return titleMatch?.[1]?.trim() ?? null;
 }
 
+function isPrivateAddress(address: string) {
+  const value = address.toLowerCase().replace(/^\[|\]$/g, "");
+  if (value.startsWith("::ffff:")) return true;
+  const ipv4 = value.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)?.slice(1).map(Number);
+  if (ipv4) {
+    const [a, b] = ipv4;
+    return a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 168)) ||
+      (a === 198 && (b === 18 || b === 19));
+  }
+  return value === "::" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") ||
+    value.startsWith("fe8") || value.startsWith("fe9") || value.startsWith("fea") || value.startsWith("feb") ||
+    value.startsWith("::ffff:0:") || value.startsWith("::ffff:127.") || value.startsWith("::ffff:10.") ||
+    value.startsWith("::ffff:192.168.");
+}
+
+async function validateRemoteUrl(url: URL) {
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password ||
+      (url.port && !["80", "443"].includes(url.port)) || hostname === "localhost" ||
+      hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname === "metadata.google.internal" ||
+      isPrivateAddress(hostname)) throw new Error("Local and private network URLs are not supported");
+
+  const allowedHosts = (Deno.env.get("URL_FETCH_HOSTS") ?? "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+  if (!allowedHosts.some((allowed) => hostname === allowed || hostname.endsWith(`.${allowed}`))) {
+    throw new Error("This host is not enabled for server-side URL retrieval");
+  }
+
+  if (!hostname.match(/^\d+\.\d+\.\d+\.\d+$/) && !hostname.includes(":")) {
+    const resolved = await Promise.allSettled([Deno.resolveDns(hostname, "A"), Deno.resolveDns(hostname, "AAAA")]);
+    const addresses = resolved.flatMap((item) => item.status === "fulfilled" ? item.value : []);
+    if (!addresses.length || addresses.some(isPrivateAddress)) throw new Error("URL destination is not public");
+  }
+}
+
 async function fetchUrlContext(url: string) {
+  let current = new URL(url);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
-
   try {
-    const response = await fetch(url, {
-      headers: {
-        "user-agent": "TruthLensAI/1.0",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch URL (${response.status})`);
+    for (let redirects = 0; redirects <= 3; redirects++) {
+      await validateRemoteUrl(current);
+      const response = await fetch(current, {
+        redirect: "manual",
+        headers: { "user-agent": "TruthLensAI/1.0", accept: "text/html,application/xhtml+xml,text/plain;q=0.9" },
+        signal: controller.signal,
+      });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location || redirects === 3) throw new Error("URL has too many redirects");
+        current = new URL(location, current);
+        continue;
+      }
+      if (!response.ok) throw new Error(`Failed to fetch URL (${response.status})`);
+      const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+      if (!contentType.includes("text/html") && !contentType.includes("text/plain") && !contentType.includes("application/xhtml+xml")) throw new Error("URL did not return a readable page");
+      const declaredLength = Number(response.headers.get("content-length") ?? 0);
+      if (declaredLength > 2 * 1024 * 1024) throw new Error("URL response is too large");
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > 2 * 1024 * 1024) throw new Error("URL response is too large");
+      const html = new TextDecoder().decode(bytes);
+      return {
+        sourceTitle: extractTitle(html) ?? extractMeta(html, "og:title"),
+        sourceDescription: extractMeta(html, "description") ?? extractMeta(html, "og:description"),
+        sourceExcerpt: stripHtml(extractMainContent(html)).slice(0, 6000),
+      };
     }
-
-    const html = await response.text();
-    const sourceTitle = extractTitle(html) ?? extractMeta(html, "og:title");
-    const sourceDescription = extractMeta(html, "description") ?? extractMeta(html, "og:description");
-    const mainContent = extractMainContent(html);
-    const text = stripHtml(mainContent).slice(0, 6000);
-
-    return {
-      sourceTitle,
-      sourceDescription,
-      sourceExcerpt: text,
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
+    throw new Error("URL could not be fetched");
+  } finally { clearTimeout(timeout); }
 }
 
 function buildPrompt(payload: {
@@ -274,6 +357,7 @@ function buildPrompt(payload: {
   sourceTitle: string | null;
   sourceDescription: string | null;
   sourceExcerpt: string;
+  outputLanguage: "auto" | "en" | "hi";
 }) {
   const context = [
     `Input type: ${payload.inputKind}`,
@@ -284,7 +368,13 @@ function buildPrompt(payload: {
     .filter(Boolean)
     .join("\n");
 
-  return `You are TruthLens AI, a careful misinformation analysis assistant.
+  const languageRule = payload.outputLanguage === "hi"
+    ? "Write summary, explanation, rationales, and warnings in Hindi."
+    : payload.outputLanguage === "en"
+      ? "Write summary, explanation, rationales, and warnings in English."
+      : "Write summary, explanation, rationales, and warnings in the input's primary language.";
+
+  return `You are TruthLens AI, a careful multilingual misinformation analysis assistant.
 
 Evaluate the input below and return a structured JSON object only.
 
@@ -295,6 +385,7 @@ Rules:
 - Use "Low" for high credibility, "Medium" for mixed/uncertain, and "High" for low credibility or manipulation risk.
 - Focus on verifiable language, sensationalism, emotional manipulation, unsupported certainty, and missing evidence.
 - If this is a URL, prefer the page title, description, and excerpt; do not pretend you fully crawled the web.
+- ${languageRule}
 - Return JSON only and match the provided schema exactly.
 
 Input:
@@ -310,71 +401,18 @@ function safeParseJson(text: string) {
   return JSON.parse(cleaned);
 }
 
-function scoreTextHeuristically(text: string, reason?: string) {
-  const lower = text.toLowerCase();
-  const sensationalPhrases = [
-    "share immediately",
-    "you won't believe",
-    "breaking",
-    "shocking",
-    "urgent",
-    "miracle",
-    "cure all",
-    "secret",
-    "they don't want you to know",
-  ];
-
-  const penalties =
-    sensationalPhrases.reduce((count, phrase) => count + (lower.includes(phrase) ? 1 : 0), 0) * 8 +
-    (text.match(/!/g)?.length ?? 0) * 2 +
-    (text.length > 240 ? 4 : 0) +
-    (/[A-Z]{6,}/.test(text) ? 4 : 0);
-
-  const score = clamp(78 - penalties, 8, 96);
-  const confidence = clamp(72 - Math.floor(penalties * 0.75), 28, 90);
-  const riskLevel: RiskLevel = score >= 70 ? "Low" : score >= 45 ? "Medium" : "High";
-  const claims = text
-    .split(/[.!?]\s+/)
-    .filter((piece) => piece.trim().length > 0)
-    .slice(0, 4)
-    .map((claim, index) => {
-      const claimScore = clamp(score - index * 6, 5, 95);
-      return {
-        claim: claim.trim(),
-        score: claimScore,
-        confidence: clamp(confidence - index * 5, 20, 90),
-        verdict: claimScore >= 70 ? "Likely true" : claimScore >= 45 ? "Mixed" : "Likely false",
-        rationale:
-          claimScore >= 70
-            ? "The statement reads as plausible but still deserves source verification."
-            : claimScore >= 45
-              ? "The statement mixes claims that would need additional evidence."
-              : "The wording leans sensational or unsupported, which lowers trustworthiness.",
-      };
-    });
-
-  return {
-    credibilityScore: score,
-    confidence,
-    riskLevel,
-    manipulationTechniques: [
-      ...(lower.includes("share immediately") ? ["Urgency"] : []),
-      ...(lower.includes("shocking") ? ["Sensationalism"] : []),
-      ...(lower.includes("secret") ? ["Appeal to secrecy"] : []),
-    ],
-    claims,
-    summary: "Heuristic fallback analysis was used because the live Gemini path was unavailable.",
-    explanation:
-      "This local fallback keeps the app usable during setup, but the best results come from the Supabase Edge Function calling Gemini.",
-    warnings: [reason ? `Gemini analysis failed: ${reason}` : "Configure Supabase and Gemini secrets to enable the full AI analysis path."],
-  } satisfies GeminiResponse;
+async function providerFetch(url: string, init: RequestInit, timeoutMs = 20_000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try { return await fetch(url, { ...init, signal: controller.signal }); }
+  finally { clearTimeout(timeout); }
 }
 
 async function callGemini(prompt: string, geminiApiKey: string) {
   const model = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.5-flash";
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-  const response = await fetch(geminiUrl, {
+  const response = await providerFetch(geminiUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -404,37 +442,211 @@ async function callGemini(prompt: string, geminiApiKey: string) {
   return safeParseJson(generatedText) as GeminiResponse;
 }
 
+function decodeXml(value: string) {
+  return value.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+}
+
+async function searchClaimEvidence(claim: string): Promise<EvidenceLink[]> {
+  try {
+    const searchUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(claim)}&hl=en-IN&gl=IN&ceid=IN:en`;
+    const response = await fetch(searchUrl, { headers: { accept: 'application/rss+xml, application/xml' } });
+    if (!response.ok) return [];
+    const xml = await response.text();
+    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 2).flatMap((match): EvidenceLink[] => {
+      const item = match[1];
+      const title = item.match(/<title>([\s\S]*?)<\/title>/i)?.[1];
+      const url = item.match(/<link>([\s\S]*?)<\/link>/i)?.[1];
+      const publisher = item.match(/<source[^>]*>([\s\S]*?)<\/source>/i)?.[1];
+      return title && url ? [{
+        title: decodeXml(title).trim(), url: decodeXml(url).trim(), publisher: publisher ? decodeXml(publisher).trim() : null,
+        kind: "reporting" as const, strength: "Related" as const, rating: null, reviewDate: null, claimText: null,
+      }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function searchVerifiedFactChecks(claim: string): Promise<EvidenceLink[]> {
+  const apiKey = Deno.env.get("GOOGLE_FACT_CHECK_API_KEY");
+  if (!apiKey) return [];
+  try {
+    const url = new URL("https://factchecktools.googleapis.com/v1alpha1/claims:search");
+    url.searchParams.set("query", claim);
+    url.searchParams.set("pageSize", "3");
+    url.searchParams.set("key", apiKey);
+    const response = await providerFetch(url.toString(), { headers: { accept: "application/json" } }, 10_000);
+    if (!response.ok) return [];
+    const payload = await response.json();
+    return (payload.claims ?? []).flatMap((matched: { text?: string; claimReview?: Array<{ title?: string; url?: string; publisher?: { name?: string }; textualRating?: string; reviewDate?: string }> }) =>
+      (matched.claimReview ?? []).flatMap((review): EvidenceLink[] => review.title && review.url ? [{
+        title: String(review.title),
+        url: String(review.url),
+        publisher: review.publisher?.name ? String(review.publisher.name) : null,
+        kind: "fact-check" as const,
+        strength: "Strong" as const,
+        rating: review.textualRating ? String(review.textualRating) : null,
+        reviewDate: review.reviewDate ? String(review.reviewDate) : null,
+        claimText: matched.text ? String(matched.text) : null,
+      }] : []),
+    ).slice(0, 3);
+  } catch { return []; }
+}
+
+async function enrichClaimsWithEvidence(claims: ClaimAnalysis[]) {
+  const selected = claims.slice(0, 4);
+  const evidence = await Promise.all(selected.map(async (claim) => {
+    const [factChecks, reporting] = await Promise.all([searchVerifiedFactChecks(claim.claim), searchClaimEvidence(claim.claim)]);
+    return [...factChecks, ...reporting].slice(0, 5);
+  }));
+  return claims.map((claim, index) => ({ ...claim, evidence: evidence[index] ?? [] }));
+}
+
+async function countAnalyses() {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) return 0;
+  const response = await fetch(`${supabaseUrl}/rest/v1/analysis_history?select=id&limit=1`, {
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, Prefer: "count=exact" },
+  });
+  const range = response.headers.get("content-range");
+  return Number(range?.split("/")[1] ?? 0) || 0;
+}
+
+async function loadTrendingScans() {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) return [];
+  const response = await fetch(`${supabaseUrl}/rest/v1/scan_pages?select=payload&is_public=eq.true&order=created_at.desc&limit=40`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
+  if (!response.ok) return [];
+  const rows = await response.json();
+  return rows.map((row: { payload?: AnalysisEnvelope }) => row.payload).filter((item: AnalysisEnvelope | undefined): item is AnalysisEnvelope => Boolean(item) && item?.engine !== "heuristic").sort((a: AnalysisEnvelope, b: AnalysisEnvelope) => a.credibilityScore - b.credibilityScore).slice(0, 12);
+}
+
+async function storeFeedback(feedback: { scanId: string; rating: "up" | "down"; comment?: string }, userId: string | null) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) throw new Error("Feedback storage is not configured");
+  const response = await fetch(`${supabaseUrl}/rest/v1/analysis_feedback`, {
+    method: "POST",
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify({ scan_id: feedback.scanId, rating: feedback.rating, comment: feedback.comment?.trim().slice(0, 1000) || null, user_id: userId }),
+  });
+  if (!response.ok) throw new Error("Unable to save feedback");
+}
+
+async function callGeminiVision(prompt: string, imageData: string, mimeType: string, geminiApiKey: string) {
+  const model = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.5-flash";
+  const response = await providerFetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
+    body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mimeType, data: imageData.replace(/^data:[^;]+;base64,/, "") } }, { text: prompt }] }], generationConfig: { maxOutputTokens: 1200, responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA } }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const data = await response.json();
+  const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!generatedText) throw new Error("No response from Gemini Vision");
+  return safeParseJson(generatedText) as GeminiResponse;
+}
+
+async function callGeminiVisionWithRetry(prompt: string, imageData: string, mimeType: string, geminiApiKey: string, retries = 1) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await callGeminiVision(prompt, imageData, mimeType, geminiApiKey);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const isRateLimit = message.includes("429") || message.toLowerCase().includes("resource_exhausted");
+      if (isRateLimit || attempt === retries) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+async function callGeminiWithRetry(prompt: string, geminiApiKey: string, retries = 1) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await callGemini(prompt, geminiApiKey);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const isRateLimit = message.includes("429") || message.toLowerCase().includes("resource_exhausted");
+      if (isRateLimit || attempt === retries) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+async function callGroq(prompt: string, groqApiKey: string) {
+  const model = Deno.env.get("GROQ_MODEL") ?? "llama-3.3-70b-versatile";
+  const response = await providerFetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqApiKey}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: "You are a misinformation-analysis engine. Return only JSON with these required fields: credibilityScore and confidence as 0-100 numbers; riskLevel as Low, Medium, or High; manipulationTechniques as a string array; claims as objects containing claim, score, confidence, verdict, and rationale; summary and explanation as strings; warnings as a string array. Verdict must be Likely true, Mixed, or Likely false. No markdown." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.3,
+      response_format: { type: "json_object" },
+    }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const data = await response.json();
+  const generatedText = data.choices?.[0]?.message?.content;
+  if (!generatedText) throw new Error("No response from Groq");
+  return safeParseJson(generatedText) as GeminiResponse;
+}
+
+async function callGroqWithRetry(prompt: string, key: string) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { return await callGroq(prompt, key); }
+    catch (error) {
+      lastError = error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+  }
+  throw lastError;
+}
+
 function normalizeGeminiResult(value: GeminiResponse): GeminiResponse {
-  const claims = Array.isArray(value.claims) ? value.claims : [];
+  if (!value || typeof value !== "object") throw new Error("Provider returned an invalid response");
+  if (!Number.isFinite(value.credibilityScore) || !Number.isFinite(value.confidence)) throw new Error("Provider response is missing scores");
+  if (!["Low", "Medium", "High"].includes(value.riskLevel)) throw new Error("Provider response has an invalid risk level");
+  if (!Array.isArray(value.claims) || !Array.isArray(value.manipulationTechniques) || !Array.isArray(value.warnings)) throw new Error("Provider response does not match the analysis schema");
+  if (!String(value.summary ?? "").trim() || !String(value.explanation ?? "").trim()) throw new Error("Provider response is incomplete");
+  const claims = value.claims;
+  for (const claim of claims) {
+    if (!String(claim.claim ?? "").trim() || !String(claim.rationale ?? "").trim() || !Number.isFinite(claim.score) || !Number.isFinite(claim.confidence) || !["Likely true", "Mixed", "Likely false"].includes(claim.verdict)) throw new Error("Provider returned an invalid claim");
+  }
 
   return {
-    credibilityScore: clamp(Math.round(Number(value.credibilityScore) || 0), 0, 100),
-    confidence: clamp(Math.round(Number(value.confidence) || 0), 0, 100),
-    riskLevel:
-      value.riskLevel === "Low" || value.riskLevel === "Medium" || value.riskLevel === "High"
-        ? value.riskLevel
-        : "Medium",
-    manipulationTechniques: Array.isArray(value.manipulationTechniques)
-      ? value.manipulationTechniques.map((item) => String(item)).filter(Boolean)
-      : [],
+    credibilityScore: clamp(Math.round(value.credibilityScore), 0, 100),
+    confidence: clamp(Math.round(value.confidence), 0, 100),
+    riskLevel: value.riskLevel,
+    manipulationTechniques: value.manipulationTechniques.map((item) => String(item)).filter(Boolean),
     claims: claims.map((claim) => ({
       claim: String(claim.claim ?? "").trim(),
-      score: clamp(Math.round(Number(claim.score) || 0), 0, 100),
-      confidence: clamp(Math.round(Number(claim.confidence) || 0), 0, 100),
-      verdict:
-        claim.verdict === "Likely true" || claim.verdict === "Mixed" || claim.verdict === "Likely false"
-          ? claim.verdict
-          : "Mixed",
+      score: clamp(Math.round(claim.score), 0, 100),
+      confidence: clamp(Math.round(claim.confidence), 0, 100),
+      verdict: claim.verdict,
       rationale: String(claim.rationale ?? "").trim(),
     })),
     summary: String(value.summary ?? "").trim(),
     explanation: String(value.explanation ?? "").trim(),
-    warnings: Array.isArray(value.warnings) ? value.warnings.map((item) => String(item)).filter(Boolean) : [],
+    warnings: value.warnings.map((item) => String(item)).filter(Boolean),
   };
 }
 
-async function storeAnalysisRecord(
-  payload: Omit<AnalysisEnvelope, "fromCache" | "engine"> & { cacheKey: string },
+async function persistAnalysis(
+  payload: AnalysisEnvelope & { cacheKey: string },
+  userId: string | null,
 ) {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -443,55 +655,27 @@ async function storeAnalysisRecord(
     return;
   }
 
-  await fetch(`${supabaseUrl}/rest/v1/analysis_history`, {
+  const { cacheKey, ...result } = payload;
+  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/persist_analysis`, {
     method: "POST",
     headers: {
       apikey: serviceRoleKey,
       Authorization: `Bearer ${serviceRoleKey}`,
       "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates,return=minimal",
     },
     body: JSON.stringify({
-      scan_id: payload.id,
-      cache_key: payload.cacheKey,
-      input_kind: payload.inputType,
-      input_text: payload.input,
-      input_url: payload.sourceUrl,
-      payload,
-      created_at: payload.createdAt,
+      p_scan_id: result.id,
+      p_user_id: userId,
+      p_cache_key: cacheKey,
+      p_input_kind: result.inputType,
+      p_input_text: result.input,
+      p_input_url: result.sourceUrl,
+      p_payload: result,
+      p_created_at: result.createdAt,
+      p_previous_scan_id: result.previousScanId ?? null,
     }),
   });
-}
-
-async function storePublicScanPage(
-  payload: Omit<AnalysisEnvelope, "fromCache" | "engine"> & { cacheKey: string },
-) {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    return;
-  }
-
-  await fetch(`${supabaseUrl}/rest/v1/scan_pages`, {
-    method: "POST",
-    headers: {
-      apikey: serviceRoleKey,
-      Authorization: `Bearer ${serviceRoleKey}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates,return=minimal",
-    },
-    body: JSON.stringify({
-      scan_id: payload.id,
-      user_id: null,
-      input_kind: payload.inputType,
-      input_text: payload.input,
-      input_url: payload.sourceUrl,
-      payload,
-      is_public: true,
-      created_at: payload.createdAt,
-    }),
-  });
+  if (!response.ok) throw new Error("Unable to persist analysis");
 }
 
 async function readCachedAnalysis(cacheKey: string) {
@@ -556,9 +740,7 @@ async function rateLimitScope(scopeKey: string) {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-  if (!supabaseUrl || !serviceRoleKey) {
-    return { allowed: true, resetAt: null as string | null };
-  }
+  if (!supabaseUrl || !serviceRoleKey) throw new Error("Rate limiting is not configured");
 
   const response = await fetch(`${supabaseUrl}/rest/v1/rpc/check_analysis_rate_limit`, {
     method: "POST",
@@ -574,50 +756,63 @@ async function rateLimitScope(scopeKey: string) {
     }),
   });
 
-  if (!response.ok) {
-    return { allowed: true, resetAt: null as string | null };
-  }
+  if (!response.ok) throw new Error("Rate limiting is temporarily unavailable");
 
   const payload = await response.json();
   const row = Array.isArray(payload) ? payload[0] : payload;
-  return { allowed: Boolean(row?.allowed ?? true), resetAt: row?.reset_at ?? null };
+  return { allowed: row?.allowed === true, resetAt: row?.reset_at ?? null };
 }
 
-async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
+function detectLanguage(text: string) {
+  if (/[\u0900-\u097F]/.test(text)) return "Hindi";
+  if (/[\u0980-\u09FF]/.test(text)) return "Bengali";
+  if (/[\u0B80-\u0BFF]/.test(text)) return "Tamil";
+  if (/[\u0C00-\u0C7F]/.test(text)) return "Telugu";
+  if (/[\u0A80-\u0AFF]/.test(text)) return "Gujarati";
+  return "English or other Latin-script language";
+}
+
+async function analyzeSingle(rawInput: string, explicitKind: InputKind | undefined, imageData: string | undefined, mimeType: string | undefined, forceRefresh: boolean, scopeKey: string, userId: string | null, outputLanguage: "auto" | "en" | "hi" = "auto", previousScanId?: string) {
   const input = normalizeInput(rawInput);
+  if (input.length > MAX_INPUT_LENGTH) throw new ValidationError(`Input must be ${MAX_INPUT_LENGTH.toLocaleString()} characters or fewer`);
   const inputType = inferInputKind(input, explicitKind);
+  if (inputType === "image") {
+    const base64 = imageData?.replace(/^data:[^;]+;base64,/, "") ?? "";
+    if (!base64) throw new ValidationError("Choose an image first");
+    if (Math.ceil(base64.length * 0.75) > MAX_IMAGE_BYTES) throw new ValidationError("Image must be 5 MiB or smaller");
+  }
+  const rateLimit = await rateLimitScope(scopeKey);
+  if (!rateLimit.allowed) throw new RateLimitError(rateLimit.resetAt);
   const sourceUrl = inputType === "url" ? toUrl(input) : null;
-  const sourceCredibility = sourceUrl ? domainSignal(sourceUrl) : null;
 
   const prepared = {
     input,
     inputKind: inputType,
     sourceTitle: null as string | null,
     sourceDescription: null as string | null,
-    sourceExcerpt: input,
+    sourceExcerpt: inputType === "image" ? "[Image input — content extracted by Gemini Vision]" : input,
+    sourceCredibility: scoreSourceCredibility(input),
   };
 
   if (sourceUrl) {
-    const context = await fetchUrlContext(sourceUrl);
-    prepared.sourceTitle = context.sourceTitle;
-    prepared.sourceDescription = context.sourceDescription;
-    prepared.sourceExcerpt = context.sourceExcerpt || input;
+    try {
+      const context = await fetchUrlContext(sourceUrl);
+      prepared.sourceTitle = context.sourceTitle;
+      prepared.sourceDescription = context.sourceDescription;
+      prepared.sourceExcerpt = context.sourceExcerpt || input;
+    } catch (error) {
+      prepared.sourceDescription = error instanceof Error && error.message.includes('private network')
+        ? 'The URL was not fetched because it points to a local or private network address.'
+        : 'The URL could not be fetched; analysis is based on the submitted link.';
+    }
   }
 
-  const cacheKey = await hashValue(`${inputType}:${sourceUrl ?? ""}:${input}`);
-  const cached = await readCachedAnalysis(cacheKey);
+  const cacheKey = await hashValue(`${CACHE_VERSION}:${outputLanguage}:${inputType}:${sourceUrl ?? ""}:${input}:${imageData ?? ""}`);
+  const cached = forceRefresh ? null : await readCachedAnalysis(cacheKey);
   if (cached) {
-    return { ...cached, fromCache: true };
-  }
-
-  const scopeKey = await hashValue(`truthlens:${inputType}:${sourceUrl ?? input}`);
-  const rateLimit = await rateLimitScope(scopeKey);
-  if (!rateLimit.allowed) {
-    const resetAt = rateLimit.resetAt ? Date.parse(rateLimit.resetAt) : Date.now() + 300000;
-    const retryAfterSeconds = Math.max(1, Math.ceil((resetAt - Date.now()) / 1000));
-    const error = new Error("Rate limit exceeded. Please try again when the window resets.");
-    Object.assign(error, { retryAfterSeconds });
-    throw error;
+    const envelope = { ...cached, id: crypto.randomUUID(), createdAt: new Date().toISOString(), analyzedAt: cached.analyzedAt ?? cached.createdAt, fromCache: true, isPublic: false, previousScanId: previousScanId ?? null };
+    await persistAnalysis({ ...envelope, cacheKey }, userId);
+    return envelope;
   }
 
   const prompt = buildPrompt({
@@ -626,36 +821,48 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
     sourceTitle: prepared.sourceTitle,
     sourceDescription: prepared.sourceDescription,
     sourceExcerpt: prepared.sourceExcerpt,
+    outputLanguage,
   });
 
-  let engine: AnalysisEnvelope["engine"] = "gemini";
+  let engine: AnalysisEnvelope["engine"] = inputType === "image" ? "gemini" : "groq";
   let analysis: GeminiResponse;
 
-  try {
+  if (inputType === "image") {
     const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
-    if (!geminiApiKey) {
-      throw new Error("Gemini API key not configured");
+    if (!geminiApiKey || !imageData) throw new AnalysisUnavailableError("Image analysis is unavailable. Please try again later.");
+    try {
+      analysis = normalizeGeminiResult(await callGeminiVisionWithRetry(prompt, imageData, mimeType ?? "image/jpeg", geminiApiKey));
+    } catch (error) {
+      console.error("Gemini image analysis failed", error);
+      throw new AnalysisUnavailableError("Image analysis is unavailable. Please try again later.");
     }
-
-    analysis = normalizeGeminiResult(await callGemini(prompt, geminiApiKey));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn("Gemini unavailable, using heuristic fallback:", reason);
-    engine = "heuristic";
-    analysis = scoreTextHeuristically(prepared.sourceExcerpt, reason);
+  } else {
+    try {
+      const groqApiKey = Deno.env.get("GROQ_API_KEY");
+      if (!groqApiKey) throw new Error("Groq API key not configured");
+      analysis = normalizeGeminiResult(await callGroqWithRetry(prompt, groqApiKey));
+    } catch (groqError) {
+      console.warn("Groq unavailable, trying Gemini backup", groqError);
+      try {
+        const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
+        if (!geminiApiKey) throw new Error("Gemini API key not configured");
+        analysis = normalizeGeminiResult(await callGeminiWithRetry(prompt, geminiApiKey));
+        engine = "gemini";
+      } catch (geminiError) {
+        console.error("All analysis providers failed", geminiError);
+        throw new AnalysisUnavailableError("Analysis providers are unavailable. Please try again later.");
+      }
+    }
   }
 
-  if (sourceCredibility) {
-    const blendedScore = clamp(Math.round(analysis.credibilityScore * 0.8 + sourceCredibility.score * 0.2), 0, 100);
-    analysis = {
-      ...analysis,
-      credibilityScore: blendedScore,
-      riskLevel: blendedScore >= 70 ? "Low" : blendedScore >= 45 ? "Medium" : "High",
-      warnings: [
-        ...analysis.warnings,
-        `Publisher signal: ${sourceCredibility.label}. This is a domain-level heuristic, not proof that the article is true or false.`,
-      ],
-    };
+  analysis = { ...analysis, claims: await enrichClaimsWithEvidence(analysis.claims) };
+
+  if (prepared.sourceCredibility && inputType === "url") {
+    const blended = Math.round(analysis.credibilityScore * 0.75 + prepared.sourceCredibility.score * 0.25);
+    analysis = { ...analysis, credibilityScore: blended, riskLevel: blended >= 70 ? "Low" : blended >= 45 ? "Medium" : "High" };
+    if (prepared.sourceCredibility.tier === "Unknown" || prepared.sourceCredibility.tier === "Low-signal") {
+      analysis.warnings = [...analysis.warnings, "Publisher credibility is uncertain; the domain score is a signal, not proof that the claims are true."];
+    }
   }
 
   const envelope: AnalysisEnvelope = {
@@ -666,23 +873,52 @@ async function analyzeSingle(rawInput: string, explicitKind?: InputKind) {
     sourceTitle: prepared.sourceTitle,
     sourceDescription: prepared.sourceDescription,
     sourceExcerpt: prepared.sourceExcerpt,
-    ...(sourceCredibility ? { sourceCredibility } : {}),
+    sourceCredibility: prepared.sourceCredibility,
     engine,
     fromCache: false,
     createdAt: new Date().toISOString(),
+    analyzedAt: new Date().toISOString(),
+    detectedLanguage: detectLanguage(prepared.sourceExcerpt),
+    analysisLanguage: outputLanguage === "hi" ? "Hindi" : outputLanguage === "en" ? "English" : detectLanguage(prepared.sourceExcerpt),
+    previousScanId: previousScanId ?? null,
     ...analysis,
   };
 
   await writeCache(cacheKey, envelope);
-  await storeAnalysisRecord({ ...envelope, cacheKey });
-  await storePublicScanPage({ ...envelope, cacheKey });
+  await persistAnalysis({ ...envelope, cacheKey }, userId);
 
   return envelope;
+}
+
+async function getRequestIdentity(req: Request) {
+  const authorization = req.headers.get("authorization") ?? "";
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  let userId: string | null = null;
+  if (supabaseUrl && anonKey && authorization.startsWith("Bearer ") && authorization !== `Bearer ${anonKey}`) {
+    try {
+      const response = await fetch(`${supabaseUrl}/auth/v1/user`, { headers: { apikey: anonKey, Authorization: authorization } });
+      if (response.ok) userId = String((await response.json()).id ?? "") || null;
+    } catch { userId = null; }
+  }
+  const rawIp = req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || "unknown";
+  const identity = userId ? `user:${userId}` : `guest:${rawIp}`;
+  return { userId, scopeKey: await hashValue(`truthlens:${identity}`) };
 }
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  if (req.method === "GET") {
+    try {
+      if (new URL(req.url).searchParams.get("feed") === "trending") return jsonResponse({ results: await loadTrendingScans() });
+      return jsonResponse({ count: await countAnalyses() });
+    } catch (error) {
+      console.error("Unable to count analyses", error);
+      return jsonResponse({ count: 0 });
+    }
   }
 
   if (req.method !== "POST") {
@@ -691,8 +927,16 @@ Deno.serve(async (req: Request) => {
 
   try {
     const payload = (await req.json()) as AnalyzeRequest;
+    const identity = await getRequestIdentity(req);
+
+    if (payload.feedback) {
+      if (!payload.feedback.scanId || !["up", "down"].includes(payload.feedback.rating)) return jsonResponse({ error: "Invalid feedback" }, 400);
+      await storeFeedback(payload.feedback, identity.userId);
+      return jsonResponse({ ok: true });
+    }
 
     if (payload.mode === "batch" || Array.isArray(payload.items)) {
+      if ((payload.items?.length ?? 0) > MAX_BATCH_SIZE) return jsonResponse({ error: `Batch mode accepts at most ${MAX_BATCH_SIZE} items`, code: "INVALID_INPUT" }, 400);
       const items = (payload.items ?? [])
         .map((item) => ({ input: normalizeInput(item.input), inputType: inferInputKind(item.input, item.inputType) }))
         .filter((item) => item.input.length > 0);
@@ -702,26 +946,31 @@ Deno.serve(async (req: Request) => {
       }
 
       const results: AnalysisEnvelope[] = [];
+      const errors: { input: string; message: string }[] = [];
       for (const item of items) {
-        results.push(await analyzeSingle(item.input, item.inputType));
+        try {
+          results.push(await analyzeSingle(item.input, item.inputType, undefined, undefined, false, identity.scopeKey, identity.userId, payload.outputLanguage ?? "auto"));
+        } catch (error) {
+          errors.push({ input: item.input, message: error instanceof Error ? error.message : "Unable to analyze this item" });
+        }
       }
 
-      return jsonResponse({ mode: "batch", results } satisfies BatchResponse);
+      return jsonResponse({ mode: "batch", results, ...(errors.length ? { errors } : {}) } satisfies BatchResponse);
     }
 
-    const rawInput = normalizeInput(payload.input ?? payload.message ?? payload.url ?? "");
-    if (!rawInput) {
+    const rawInput = normalizeInput(payload.input ?? payload.message ?? payload.url ?? (payload.inputType === "image" ? "[Image input]" : ""));
+    if (!rawInput || (payload.inputType === "image" && !payload.imageData)) {
       return jsonResponse({ error: "Message or URL is required" }, 400);
     }
 
-    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput));
+    const result = await analyzeSingle(rawInput, payload.inputType ?? inferInputKind(rawInput), payload.imageData, payload.mimeType, Boolean(payload.forceRefresh), identity.scopeKey, identity.userId, payload.outputLanguage ?? "auto", payload.previousScanId);
     return jsonResponse(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";
     console.error("Error in analyze function:", error);
-    const retryAfterSeconds = typeof error === "object" && error !== null && "retryAfterSeconds" in error
-      ? Number((error as { retryAfterSeconds: number }).retryAfterSeconds)
-      : undefined;
-    return jsonResponse({ error: message, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) }, message.includes("Rate limit") ? 429 : 500);
+    if (error instanceof RateLimitError) return jsonResponse({ error: `${message}. Please wait before trying again.`, retryAt: error.resetAt }, 429);
+    if (error instanceof ValidationError) return jsonResponse({ error: message, code: "INVALID_INPUT" }, 400);
+    if (error instanceof AnalysisUnavailableError) return jsonResponse({ error: message, code: "PROVIDERS_UNAVAILABLE" }, 503);
+    return jsonResponse({ error: "Analysis is temporarily unavailable. Please try again.", code: "INTERNAL_ERROR" }, 500);
   }
 });

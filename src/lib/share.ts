@@ -102,3 +102,57 @@ export function downloadShareCard(result: AnalysisResult) {
   URL.revokeObjectURL(url);
 }
 
+export async function shareCardPngBlob(result: AnalysisResult): Promise<Blob> {
+  const svgBlob = new Blob([createShareSvg(result)], { type: 'image/svg+xml;charset=utf-8' });
+  const svgUrl = URL.createObjectURL(svgBlob);
+  try {
+    const image = new Image();
+    image.src = svgUrl;
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('Unable to render share card'));
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = 1200;
+    canvas.height = 630;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Unable to create image canvas');
+    context.drawImage(image, 0, 0, 1200, 630);
+    return await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Unable to create PNG')), 'image/png'));
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+export async function downloadShareCardPng(result: AnalysisResult) {
+  const blob = await shareCardPngBlob(result);
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `truthlens-${result.id}.png`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function copyShareCardImage(result: AnalysisResult) {
+  try {
+    const blob = await shareCardPngBlob(result);
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  } catch {
+    await downloadShareCardPng(result);
+  }
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+export function printAnalysisReport(result: AnalysisResult) {
+  const report = window.open('', '_blank');
+  if (!report) throw new Error('Allow popups to create a PDF report');
+  report.opener = null;
+  const claimRows = result.claims.map((claim) => `<section><h3>${escapeHtml(claim.claim)}</h3><p><strong>${claim.verdict}</strong> · ${claim.score}/100 · ${claim.confidence}% confidence</p><p>${escapeHtml(claim.rationale)}</p>${(claim.evidence ?? []).map((item) => `<p class="evidence">${escapeHtml(item.strength ?? 'Related')} ${escapeHtml(item.kind ?? 'reporting')}: <a href="${escapeHtml(item.url)}">${escapeHtml(item.title)}</a>${item.rating ? ` · Rating: ${escapeHtml(item.rating)}` : ''}</p>`).join('')}</section>`).join('');
+  report.document.write(`<!doctype html><html><head><title>TruthLens report</title><style>body{font:15px/1.55 system-ui;max-width:820px;margin:40px auto;padding:0 24px;color:#172033}header{border-bottom:3px solid #0891b2;padding-bottom:18px}h1{margin-bottom:4px}.score{font-size:34px;font-weight:800}.meta,.evidence{color:#526174}section{break-inside:avoid;border-bottom:1px solid #dbe3ea;padding:12px 0}a{color:#0369a1}@media print{button{display:none}}</style></head><body><header><h1>TruthLens AI analysis report</h1><p class="score">${result.credibilityScore}/100 · ${escapeHtml(result.riskLevel)} risk</p><p class="meta">Generated ${escapeHtml(new Date(result.createdAt).toLocaleString())} · Engine: ${escapeHtml(result.engine)} · Language: ${escapeHtml(result.analysisLanguage ?? 'Auto')}</p></header><h2>${escapeHtml(result.sourceTitle || result.input)}</h2><p>${escapeHtml(result.summary)}</p><h2>Claim analysis</h2>${claimRows}<h2>Explanation</h2><p>${escapeHtml(result.explanation)}</p><p class="meta">AI-assisted analysis can be wrong. Verify important decisions using the linked sources.</p><button onclick="window.print()">Print / Save as PDF</button><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250))</script></body></html>`);
+  report.document.close();
+}
+

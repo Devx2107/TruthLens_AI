@@ -1,215 +1,88 @@
-import type { AnalyzeRequest, AnalysisResult, BatchAnalysisResponse, ClaimAnalysis, InputKind } from '../types';
+import type { AnalyzeRequest, AnalysisResult, BatchAnalysisResponse, InputKind, UsageStats } from '../types';
 import { hasSupabaseConfig, supabase } from './supabase';
-
-export class AnalyzeRequestError extends Error {
-  status: number;
-  retryAfterSeconds?: number;
-
-  constructor(message: string, status: number, retryAfterSeconds?: number) {
-    super(message);
-    this.name = 'AnalyzeRequestError';
-    this.status = status;
-    this.retryAfterSeconds = retryAfterSeconds;
-  }
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
 
 export function detectInputKind(input: string, explicit?: InputKind): InputKind {
   if (explicit) return explicit;
-  if (/^https?:\/\/\S+/i.test(input.trim()) || /^www\.\S+/i.test(input.trim())) return 'url';
-  return 'text';
+  return /^https?:\/\/\S+/i.test(input.trim()) || /^www\.\S+/i.test(input.trim()) ? 'url' : 'text';
 }
 
-function normalizeText(value: string) {
-  return value.trim().replace(/\s+/g, ' ');
+async function authToken() {
+  if (!supabase) return import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token || (import.meta.env.VITE_SUPABASE_ANON_KEY as string);
 }
 
-function buildHeuristicClaims(input: string, score: number, confidence: number) {
-  return input
-    .split(/[.!?]\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .slice(0, 4)
-    .map((claim, index) => {
-      const adjusted = clamp(score - index * 6, 5, 95);
-      const verdict: ClaimAnalysis['verdict'] = adjusted >= 70 ? 'Likely true' : adjusted >= 45 ? 'Mixed' : 'Likely false';
-      return {
-        claim,
-        score: adjusted,
-        confidence: clamp(confidence - index * 5, 20, 95),
-        verdict,
-        rationale:
-          adjusted >= 70
-            ? 'This reads like a plausible statement, but it still benefits from source verification.'
-            : adjusted >= 45
-              ? 'The wording mixes confidence and uncertainty, so it deserves more evidence.'
-              : 'The phrasing looks weakly supported or sensational, which lowers trustworthiness.',
-      };
-    });
-}
-
-function localAnalyzeOne(input: string, inputType: InputKind): AnalysisResult {
-  const lower = input.toLowerCase();
-  const penalties =
-    (lower.includes('share immediately') ? 10 : 0) +
-    (lower.includes('breaking') ? 6 : 0) +
-    (lower.includes('shocking') ? 8 : 0) +
-    (lower.includes('secret') ? 8 : 0) +
-    (input.match(/!/g)?.length ?? 0) * 2 +
-    (input.length > 220 ? 4 : 0) +
-    (/[A-Z]{6,}/.test(input) ? 4 : 0);
-
-  const credibilityScore = clamp(78 - penalties, 10, 95);
-  const confidence = clamp(72 - Math.floor(penalties * 0.75), 25, 95);
-  const riskLevel = credibilityScore >= 70 ? 'Low' : credibilityScore >= 45 ? 'Medium' : 'High';
-
-  const manipulationTechniques = [
-    ...(lower.includes('share immediately') || lower.includes('urgent') ? ['Urgency'] : []),
-    ...(lower.includes('shocking') ? ['Sensationalism'] : []),
-    ...(lower.includes('secret') ? ['Appeal to secrecy'] : []),
-  ];
-
-  return {
-    id: crypto.randomUUID(),
-    input,
-    inputType,
-    sourceUrl: inputType === 'url' ? input : null,
-    sourceTitle: null,
-    sourceDescription: null,
-    sourceExcerpt: input,
-    credibilityScore,
-    confidence,
-    riskLevel,
-    manipulationTechniques,
-    claims: buildHeuristicClaims(input, credibilityScore, confidence),
-    summary:
-      inputType === 'url'
-        ? 'Demo mode analyzed the URL string because the live analysis API was unavailable.'
-        : 'Demo mode analyzed the text locally because the live analysis API was unavailable.',
-    explanation:
-      'Connect Supabase and Gemini for the full analysis pipeline. This local fallback keeps the interface usable during setup.',
-    warnings:
-      inputType === 'url'
-        ? ['URL previews require the live backend to fetch and summarize the page.']
-        : ['This is a local fallback. Configure the analysis API for better results.'],
-    engine: 'heuristic',
-    createdAt: new Date().toISOString(),
-    fromCache: false,
-  };
-}
-
-async function postToEdgeFunction(payload: AnalyzeRequest) {
-  if (!hasSupabaseConfig) {
-    throw new Error('Supabase is not configured');
-  }
-
-  const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
+async function apiFetch(path = '', init: RequestInit = {}) {
+  if (!hasSupabaseConfig) throw new Error('TruthLens analysis is not configured. Add the Supabase environment variables and try again.');
+  const token = await authToken();
+  return fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze${path}`, {
+    ...init,
+    headers: { Authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
   });
+}
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    let message = errorText || 'Failed to analyze';
-    let retryAfterSeconds: number | undefined;
-    try {
-      const body = JSON.parse(errorText) as { error?: string; retryAfterSeconds?: number };
-      message = body.error || message;
-      retryAfterSeconds = body.retryAfterSeconds;
-    } catch {
-      // Keep the raw response for non-JSON errors.
-    }
-    throw new AnalyzeRequestError(message, response.status, retryAfterSeconds);
-  }
-
-  return response.json() as Promise<AnalysisResult | BatchAnalysisResponse>;
+async function responseError(response: Response) {
+  const text = await response.text();
+  let details: { error?: string; retryAt?: string | null; code?: string } = {};
+  try { details = JSON.parse(text); } catch { details.error = text; }
+  const error = new Error(details.error || 'Analysis is unavailable. Please try again.') as Error & {
+    status?: number; retryAt?: string | null; code?: string;
+  };
+  error.status = response.status;
+  error.retryAt = details.retryAt;
+  error.code = details.code;
+  return error;
 }
 
 export async function analyzeRequest(payload: AnalyzeRequest): Promise<AnalysisResult | BatchAnalysisResponse> {
+  const response = await apiFetch('', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw await responseError(response);
+  return response.json() as Promise<AnalysisResult | BatchAnalysisResponse>;
+}
+
+export async function loadUsageCount(): Promise<number | null> {
   try {
-    return await postToEdgeFunction(payload);
-  } catch (error) {
-    if (error instanceof AnalyzeRequestError && error.status === 429) {
-      throw error;
-    }
+    const response = await apiFetch();
+    if (!response.ok) return null;
+    const payload = (await response.json()) as UsageStats;
+    return Number.isFinite(payload.count) ? payload.count : null;
+  } catch { return null; }
+}
 
-    if (payload.mode === 'batch' || Array.isArray(payload.items)) {
-      const items = payload.items ?? [];
-      return {
-        mode: 'batch',
-        results: items.map((item) => localAnalyzeOne(normalizeText(item.input), item.inputType)),
-      };
-    }
+export async function submitAnalysisFeedback(scanId: string, rating: 'up' | 'down', comment?: string) {
+  const response = await apiFetch('', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback: { scanId, rating, comment } }),
+  });
+  if (!response.ok) throw await responseError(response);
+}
 
-    const text = normalizeText(payload.input ?? payload.message ?? payload.url ?? '');
-    const kind = detectInputKind(text, payload.inputType);
-    return localAnalyzeOne(text, kind);
-  }
+export async function fetchTrendingScans() {
+  const response = await apiFetch('?feed=trending');
+  if (!response.ok) throw await responseError(response);
+  return ((await response.json()) as { results?: AnalysisResult[] }).results ?? [];
 }
 
 export async function fetchPublicScan(scanId: string) {
-  if (!hasSupabaseConfig || !supabase) {
-    return null;
-  }
-
-  const { data, error } = await supabase
-    .from('scan_pages')
-    .select('payload')
-    .eq('scan_id', scanId)
-    .eq('is_public', true)
-    .maybeSingle();
-
-  if (error || !data?.payload) {
-    return null;
-  }
-
-  return data.payload as AnalysisResult;
-}
-
-export async function saveAnalysisForUser(result: AnalysisResult, userId: string) {
-  if (!supabase) {
-    return;
-  }
-
-  const historyRow = {
-    scan_id: result.id,
-    user_id: userId,
-    input_kind: result.inputType,
-    input_text: result.input,
-    input_url: result.sourceUrl,
-    payload: result,
-    created_at: result.createdAt,
-  };
-
-  // Public scan pages are created by the Edge Function with the service role.
-  // Keep the client-side write scoped to the user's private history row.
-  await supabase.from('analysis_history').upsert(historyRow, { onConflict: 'scan_id' });
+  if (!supabase) return null;
+  const { data, error } = await supabase.from('scan_pages').select('payload,is_public').eq('scan_id', scanId).maybeSingle();
+  if (error || !data?.payload) return null;
+  return { ...(data.payload as AnalysisResult), isPublic: Boolean(data.is_public) };
 }
 
 export async function loadUserHistory(userId: string) {
-  if (!supabase) {
-    return [];
-  }
+  if (!supabase) return [];
+  const { data, error } = await supabase.from('scan_pages').select('payload,is_public').eq('user_id', userId).order('created_at', { ascending: false }).limit(20);
+  if (error || !data) return [];
+  return data.flatMap((row) => row.payload ? [{ ...(row.payload as AnalysisResult), isPublic: Boolean(row.is_public) }] : []);
+}
 
-  const { data, error } = await supabase
-    .from('analysis_history')
-    .select('payload')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-    .limit(20);
-
-  if (error || !data) {
-    return [];
-  }
-
-  return data
-    .map((row) => row.payload as AnalysisResult)
-    .filter(Boolean);
+export async function setScanPublished(scanId: string, isPublic: boolean) {
+  if (!supabase) throw new Error('Supabase is not configured');
+  const { data } = await supabase.auth.getSession();
+  if (!data.session) throw new Error('Sign in to publish scans');
+  const { data: updated, error } = await supabase.rpc('set_scan_visibility', { p_scan_id: scanId, p_is_public: isPublic });
+  if (error) throw new Error(error.message);
+  if (!updated) throw new Error('This scan is not owned by your account. Rescan it while signed in to publish it.');
 }

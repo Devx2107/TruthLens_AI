@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "TruthLens AI",
+  "version": "0.3.0",
+  "description": "Check selected text with TruthLens AI.",
+  "permissions": ["activeTab", "contextMenus", "scripting", "storage"],
+  "host_permissions": ["https://mwmjlaaiqogvjjgqlnwd.supabase.co/*"],
+  "action": { "default_title": "TruthLens AI", "default_popup": "popup.html" },
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html"
+}

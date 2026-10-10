@@ -1,59 +1,42 @@
-import React, { FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
-  Bot,
-  Copy,
   History,
-  Link2,
-  Loader2,
   LogIn,
   LogOut,
   MoonStar,
-  Plus,
-  Search,
+  Menu,
   Shield,
-  Sparkles,
   SunMedium,
-  TextCursorInput,
-  Upload,
   User,
 } from 'lucide-react';
 import ResultCard from './components/ResultCard';
+import AppNavigation from './components/AppNavigation';
+import ScannerForm from './components/ScannerForm';
+import Dashboard from './components/Dashboard';
+import PolicyPage from './components/PolicyPage';
+import CompareView from './components/CompareView';
+import TrendingPage from './components/TrendingPage';
+import Watchlist from './components/Watchlist';
+import AdminFeedback from './components/AdminFeedback';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
-import { AnalyzeRequestError, analyzeRequest, fetchPublicScan, loadUserHistory, saveAnalysisForUser } from './lib/analyze';
+import { analyzeRequest, fetchPublicScan, fetchTrendingScans, loadUsageCount, loadUserHistory, setScanPublished, submitAnalysisFeedback } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
-import { supabase, hasSupabaseConfig } from './lib/supabase';
+import { supabase } from './lib/supabase';
+import { addWatchlistClaim, loadScanRevisions } from './lib/features';
 
 void React;
 
-type RouteState = { kind: 'home' } | { kind: 'scan'; id: string };
+type RouteState = { kind: 'home' } | { kind: 'history' } | { kind: 'watchlist' } | { kind: 'scan'; id: string } | { kind: 'privacy' } | { kind: 'terms' } | { kind: 'trending' };
 
-const loadingStages = ['Reading message', 'Checking sources', 'Scoring credibility'];
-
-const examplePool: { single: string; batch: string }[] = [
-  {
-    single: 'Hot water cures all viruses. Share immediately!',
-    batch: 'Hot water cures all viruses. Share immediately!\nISRO launches a new satellite to monitor climate change.',
-  },
-  {
-    single: 'Scientists confirm coffee cures all diseases, share immediately!',
-    batch: 'Scientists confirm coffee cures all diseases, share immediately!\nWHO releases updated guidance on seasonal flu vaccines.',
-  },
-  {
-    single: 'They don\'t want you to know this one secret trick that cures diabetes overnight!',
-    batch: 'They don\'t want you to know this one secret trick that cures diabetes overnight!\nLocal city council approves new public park budget for next year.',
-  },
-  {
-    single: 'BREAKING: Government secretly adds mind-control chemicals to drinking water!!!',
-    batch: 'BREAKING: Government secretly adds mind-control chemicals to drinking water!!!\nNew bridge construction project completes ahead of schedule.',
-  },
-  {
-    single: 'Eating this common fruit seed kills cancer cells instantly, doctors are furious!',
-    batch: 'Eating this common fruit seed kills cancer cells instantly, doctors are furious!\nUniversity researchers publish peer-reviewed study on sleep patterns.',
-  },
-];
+const loadingStages = ['Reading input', 'Reviewing context', 'Preparing assessment'];
 
 function detectRoute(): RouteState {
+  if (window.location.pathname === '/privacy') return { kind: 'privacy' };
+  if (window.location.pathname === '/terms') return { kind: 'terms' };
+  if (window.location.pathname === '/trending') return { kind: 'trending' };
+  if (window.location.pathname === '/history') return { kind: 'history' };
+  if (window.location.pathname === '/watchlist') return { kind: 'watchlist' };
   const match = window.location.pathname.match(/^\/scan\/([^/]+)$/i);
   if (match?.[1]) {
     return { kind: 'scan', id: decodeURIComponent(match[1]) };
@@ -62,8 +45,11 @@ function detectRoute(): RouteState {
   return { kind: 'home' };
 }
 
-function copyText(value: string) {
-  return navigator.clipboard.writeText(value);
+async function copyText(value: string) {
+  if (!navigator.clipboard?.writeText) {
+    throw new Error('Clipboard access is unavailable');
+  }
+  await navigator.clipboard.writeText(value);
 }
 
 function mergeHistory(primary: AnalysisResult[], secondary: AnalysisResult[]) {
@@ -72,66 +58,49 @@ function mergeHistory(primary: AnalysisResult[], secondary: AnalysisResult[]) {
   return [...map.values()].sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)).slice(0, 20);
 }
 
-function ModeButton({
-  active,
-  icon,
-  label,
-  onClick,
-  }: {
-    active: boolean;
-    icon: ReactNode;
-    label: string;
-    onClick: () => void;
-  }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition ${
-        active
-          ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-50 shadow-[0_10px_30px_rgba(34,211,238,0.2)]'
-          : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white'
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
-  );
-}
-
 function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => getThemePreference());
   const [route, setRoute] = useState<RouteState>(() => detectRoute());
   const [mode, setMode] = useState<AnalysisMode>('single');
   const [inputKind, setInputKind] = useState<InputKind>('text');
   const [singleInput, setSingleInput] = useState('');
+  const [compareInput, setCompareInput] = useState('');
+  const [compareInputKind, setCompareInputKind] = useState<InputKind>('text');
+  const [compareResult, setCompareResult] = useState<AnalysisResult | null>(null);
   const [batchInput, setBatchInput] = useState('');
+  const [imageData, setImageData] = useState('');
+  const [imageMimeType, setImageMimeType] = useState('image/jpeg');
   const [loading, setLoading] = useState(false);
   const [loadingStage, setLoadingStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
+  const [retryAt, setRetryAt] = useState<string | null>(null);
+  const [retrySeconds, setRetrySeconds] = useState<number | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [batchResults, setBatchResults] = useState<AnalysisResult[]>([]);
+  const [batchErrors, setBatchErrors] = useState<{ input: string; message: string }[]>([]);
   const [history, setHistory] = useState<AnalysisResult[]>([]);
+  const [usageCount, setUsageCount] = useState<number | null>(null);
   const [sharedScan, setSharedScan] = useState<AnalysisResult | null>(null);
+  const [trendingScans, setTrendingScans] = useState<AnalysisResult[]>([]);
+  const [trendingStatus, setTrendingStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [notFound, setNotFound] = useState(false);
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [email, setEmail] = useState('');
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement>(null);
-  const [footerVisible, setFooterVisible] = useState(false);
-  const lastExampleIndex = useRef<number | null>(null);
+  const scanFormRef = useRef<HTMLFormElement>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [outputLanguage, setOutputLanguage] = useState<'auto' | 'en' | 'hi'>('auto');
+  const [revisions, setRevisions] = useState<AnalysisResult[]>([]);
+  const [watchlistRefresh, setWatchlistRefresh] = useState(0);
 
   const loadingMessage = loadingStages[loadingStage % loadingStages.length];
 
-  useEffect(() => {
-    if (retryAfterSeconds <= 0) return;
-    const timer = window.setInterval(() => {
-      setRetryAfterSeconds((seconds) => Math.max(0, seconds - 1));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [retryAfterSeconds]);
+  const changeMode = (nextMode: AnalysisMode) => {
+    setMode(nextMode);
+    if (nextMode !== 'single' && inputKind === 'image') setInputKind('text');
+  };
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -145,9 +114,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const local = getLocalScan(route.kind === 'scan' ? route.id : '');
+    const local = getLocalScan(route.kind === 'scan' ? route.id : '', session?.id);
     if (route.kind !== 'scan') {
-      setHistory(loadLocalHistory());
+      setHistory(loadLocalHistory(session?.id));
       setSharedScan(null);
       setNotFound(false);
       return;
@@ -167,7 +136,6 @@ function App() {
       if (cancelled) return;
       if (scan) {
         setSharedScan(scan);
-        saveLocalScan(scan);
       } else {
         setNotFound(true);
       }
@@ -176,11 +144,43 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [route]);
+  }, [route, session?.id]);
+
+  useEffect(() => {
+    if (route.kind !== 'trending') return;
+    let cancelled = false;
+    setTrendingStatus('loading');
+    void fetchTrendingScans().then((scans) => {
+      if (cancelled) return;
+      setTrendingScans(scans);
+      setTrendingStatus('ready');
+    }).catch(() => { if (!cancelled) setTrendingStatus('error'); });
+    return () => { cancelled = true; };
+  }, [route.kind]);
+
+  useEffect(() => {
+    if (!retryAt) { setRetrySeconds(null); return; }
+    const update = () => setRetrySeconds(Math.max(0, Math.ceil((Date.parse(retryAt) - Date.now()) / 1000)));
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [retryAt]);
 
   useEffect(() => {
     setHistory(loadLocalHistory());
+    void loadUsageCount().then((count) => setUsageCount(count));
   }, []);
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && route.kind === 'home') {
+        event.preventDefault();
+        scanFormRef.current?.requestSubmit();
+      }
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, [route.kind]);
 
   useEffect(() => {
     const client = supabase;
@@ -191,26 +191,25 @@ function App() {
     const init = async () => {
       const { data } = await client.auth.getSession();
       const activeSession = data.session;
-      setSession(activeSession ? { id: activeSession.user.id, email: activeSession.user.email ?? null } : null);
+      setSession(activeSession ? { id: activeSession.user.id, email: activeSession.user.email ?? null, isAdmin: activeSession.user.app_metadata?.role === 'admin' } : null);
 
-      const localHistory = loadLocalHistory();
       if (activeSession) {
         const remoteHistory = await loadUserHistory(activeSession.user.id);
-        setHistory(mergeHistory(remoteHistory, localHistory));
+        setHistory(mergeHistory(remoteHistory, loadLocalHistory(activeSession.user.id)));
       } else {
-        setHistory(localHistory);
+        setHistory(loadLocalHistory());
       }
     };
 
     void init();
 
     const { data: authListener } = client.auth.onAuthStateChange(async (_event, nextSession) => {
-      const next = nextSession ? { id: nextSession.user.id, email: nextSession.user.email ?? null } : null;
+      const next = nextSession ? { id: nextSession.user.id, email: nextSession.user.email ?? null, isAdmin: nextSession.user.app_metadata?.role === 'admin' } : null;
       setSession(next);
       if (next) {
         const remoteHistory = await loadUserHistory(next.id);
-        setHistory((current) => mergeHistory(remoteHistory, current));
-      }
+        setHistory(mergeHistory(remoteHistory, loadLocalHistory(next.id)));
+      } else setHistory(loadLocalHistory());
     });
 
     return () => {
@@ -231,35 +230,25 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [accountOpen]);
 
-  useEffect(() => {
-    const SCROLL_THRESHOLD = 120;
-
-    const handleScroll = () => {
-      setFooterVisible(window.scrollY > SCROLL_THRESHOLD);
-    };
-
-    handleScroll();
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
-
   const currentResult = route.kind === 'scan' ? sharedScan : result;
 
-  const historyItems = useMemo(() => history.slice(0, 8), [history]);
+  useEffect(() => {
+    if (!currentResult || !session) { setRevisions([]); return; }
+    void loadScanRevisions(currentResult.id).then(setRevisions);
+  }, [currentResult, session]);
+
+  const historyItems = useMemo(() => history.slice(0, route.kind === 'history' ? 20 : 3), [history, route.kind]);
 
   const persistScan = async (scan: AnalysisResult) => {
-    const merged = saveLocalScan(scan);
-    saveLocalHistory(merged);
+    saveLocalScan(scan, session?.id);
     setHistory((current) => mergeHistory([scan], current));
-    if (session) {
-      await saveAnalysisForUser(scan, session.id);
-    }
+    void loadUsageCount().then((count) => setUsageCount(count));
   };
 
   const startAnalysis = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
-    setRetryAfterSeconds(0);
+    setRetryAt(null);
 
     const singleValue = singleInput.trim();
     const batchValues = batchInput
@@ -271,8 +260,24 @@ function App() {
       setError('Drop in at least one headline or link for batch mode.');
       return;
     }
+    if (batchValues.length > 10) {
+      setError('Batch mode accepts at most 10 items.');
+      return;
+    }
+    if ([singleValue, compareInput.trim(), ...batchValues].some((value) => value.length > 20_000)) {
+      setError('Each text or URL must be 20,000 characters or fewer.');
+      return;
+    }
 
-    if (mode !== 'batch' && singleValue.length === 0) {
+    if (mode === 'compare' && compareInput.trim().length === 0) {
+      setError('Add a second claim to compare.');
+      return;
+    }
+    if (inputKind === 'image' && !imageData) {
+      setError('Choose or paste an image first.');
+      return;
+    }
+    if (mode !== 'batch' && inputKind !== 'image' && singleValue.length === 0) {
       setError(inputKind === 'url' ? 'Paste a link first.' : 'Paste a message or headline first.');
       return;
     }
@@ -280,14 +285,19 @@ function App() {
     setLoading(true);
     setLoadingStage(0);
     setResult(null);
+    setCompareResult(null);
     setBatchResults([]);
+    setBatchErrors([]);
 
     const interval = window.setInterval(() => {
       setLoadingStage((stage) => (stage + 1) % loadingStages.length);
     }, 1300);
 
     try {
-      const response = await analyzeRequest(
+      const response = mode === 'compare' ? await Promise.all([
+        analyzeRequest({ mode: 'single', input: singleValue, inputType: inputKind, outputLanguage }),
+        analyzeRequest({ mode: 'single', input: compareInput.trim(), inputType: compareInputKind, outputLanguage }),
+      ]) : await analyzeRequest(
         mode === 'batch'
           ? {
               mode: 'batch',
@@ -295,16 +305,25 @@ function App() {
                 input: item,
                 inputType: item.match(/^https?:\/\//i) || item.match(/^www\./i) ? 'url' : 'text',
               })),
+              outputLanguage,
             }
           : {
               mode: 'single',
-              input: singleValue,
+              input: inputKind === 'image' ? '[Image input]' : singleValue,
               inputType: inputKind,
+              outputLanguage,
+              ...(inputKind === 'image' ? { imageData, mimeType: imageMimeType } : {}),
             },
       );
 
-      if ('results' in response) {
+      if (Array.isArray(response)) {
+        const left = 'results' in response[0] ? response[0].results[0] : response[0];
+        const right = 'results' in response[1] ? response[1].results[0] : response[1];
+        if (left && right) { setResult(left); setCompareResult(right); await Promise.all([persistScan(left), persistScan(right)]); }
+      } else if ('results' in response) {
         setBatchResults(response.results);
+        if (response.errors?.length) setError(`${response.errors.length} batch item${response.errors.length === 1 ? '' : 's'} failed. ${response.errors[0].message}`);
+        setBatchErrors(response.errors ?? []);
         await Promise.all(response.results.map((scan) => persistScan(scan)));
         setResult(response.results[0] ?? null);
       } else {
@@ -314,12 +333,8 @@ function App() {
         setRoute({ kind: 'scan', id: response.id });
       }
     } catch (analysisError) {
-      if (analysisError instanceof AnalyzeRequestError && analysisError.status === 429) {
-        setRetryAfterSeconds(analysisError.retryAfterSeconds ?? 300);
-        setError('You have reached the scan limit for this window.');
-      } else {
-        setError(analysisError instanceof Error ? analysisError.message : 'Unable to analyze the message. Please try again.');
-      }
+      setRetryAt(analysisError instanceof Error ? (analysisError as Error & { retryAt?: string | null }).retryAt ?? null : null);
+      setError(analysisError instanceof Error ? analysisError.message : 'Unable to analyze the message. Please try again.');
     } finally {
       window.clearInterval(interval);
       setLoading(false);
@@ -329,11 +344,41 @@ function App() {
   const openScan = (scanId: string) => {
     window.history.pushState({}, '', `/scan/${scanId}`);
     setRoute({ kind: 'scan', id: scanId });
+    setMobileNavOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const copyShareLink = async (scan: AnalysisResult) => {
     const shareUrl = `${window.location.origin}/scan/${scan.id}`;
-    await copyText(shareUrl);
+    try {
+      if (!session) throw new Error('Sign in to publish and share a scan.');
+      if (!scan.isPublic) {
+        const approved = window.confirm('Publish this scan? Its submitted content and analysis will become public and may appear in Trending.');
+        if (!approved) return;
+        await setScanPublished(scan.id, true);
+        const published = { ...scan, isPublic: true };
+        setResult((current) => current?.id === scan.id ? published : current);
+        setSharedScan((current) => current?.id === scan.id ? published : current);
+        setHistory((current) => current.map((item) => item.id === scan.id ? published : item));
+        saveLocalScan(published, session.id);
+      }
+      await copyText(shareUrl);
+      setAuthMessage('Public link copied.');
+    } catch (shareError) {
+      setError(shareError instanceof Error ? shareError.message : 'Unable to publish or copy the link.');
+    }
+  };
+
+  const unpublishScan = async (scan: AnalysisResult) => {
+    try {
+      await setScanPublished(scan.id, false);
+      const privateScan = { ...scan, isPublic: false };
+      setResult((current) => current?.id === scan.id ? privateScan : current);
+      setSharedScan((current) => current?.id === scan.id ? privateScan : current);
+      setHistory((current) => current.map((item) => item.id === scan.id ? privateScan : item));
+      saveLocalScan(privateScan, session?.id);
+      setAuthMessage('Scan is private again.');
+    } catch (publishError) { setError(publishError instanceof Error ? publishError.message : 'Unable to unpublish scan.'); }
   };
 
   const signIn = async () => {
@@ -364,32 +409,94 @@ function App() {
 
     await supabase.auth.signOut();
     setSession(null);
+    setHistory(loadLocalHistory());
+  };
+
+  const startNewScan = () => {
+    setResult(null);
+    setCompareResult(null);
+    setBatchResults([]);
+    setBatchErrors([]);
+    setSingleInput('');
+    setCompareInput('');
+    setImageData('');
+    setError(null);
+    setRetryAt(null);
+    setInternalRoute('home');
+  };
+
+  const refreshScan = async (scan: AnalysisResult) => {
+    setError(null);
+    setLoading(true);
+    try {
+      if (scan.inputType === 'image' && !imageData) throw new Error('Choose the image again before rescanning it.');
+      const refreshed = await analyzeRequest({ mode: 'single', input: scan.input, inputType: scan.inputType, forceRefresh: true, outputLanguage, previousScanId: scan.id, ...(scan.inputType === 'image' ? { imageData, mimeType: imageMimeType } : {}) });
+      if (!('results' in refreshed)) {
+        setResult(refreshed);
+        setSharedScan(refreshed);
+        await persistScan(refreshed);
+        window.history.pushState({}, '', `/scan/${refreshed.id}`);
+        setRoute({ kind: 'scan', id: refreshed.id });
+      }
+    } catch (refreshError) {
+      setRetryAt(refreshError instanceof Error ? (refreshError as Error & { retryAt?: string | null }).retryAt ?? null : null);
+      setError(refreshError instanceof Error ? refreshError.message : 'Unable to refresh this scan.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitFeedback = async (scan: AnalysisResult, rating: 'up' | 'down', comment?: string) => {
+    try { await submitAnalysisFeedback(scan.id, rating, comment); } catch { setError('Feedback could not be saved. Please try again.'); }
+  };
+
+  const watchClaim = async (scan: AnalysisResult) => {
+    if (!session) { setError('Sign in to save claim watches.'); return; }
+    try {
+      await addWatchlistClaim(scan.claims[0]?.claim || scan.input);
+      setWatchlistRefresh((value) => value + 1);
+      setAuthMessage('Claim added to your watchlist.');
+    } catch (watchError) { setError(watchError instanceof Error ? watchError.message : 'Unable to watch this claim.'); }
+  };
+
+  const setInternalRoute = (kind: 'home' | 'history' | 'watchlist' | 'privacy' | 'terms' | 'trending') => {
+    window.history.pushState({}, '', kind === 'home' ? '/' : `/${kind}`);
+    setRoute({ kind });
+    setMobileNavOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const readImage = (file: File) => {
+    if (file.size > 5 * 1024 * 1024) { setError('Image must be 5 MiB or smaller.'); return; }
+    if (!file.type.startsWith('image/')) { setError('Choose a supported image file.'); return; }
+    setError(null);
+    setImageMimeType(file.type || 'image/jpeg');
+    const reader = new FileReader();
+    reader.onload = () => setImageData(String(reader.result));
+    reader.readAsDataURL(file);
+  };
+
+  const pasteImage = async () => {
+    try {
+      const items = await navigator.clipboard.read();
+      const item = items.find((entry) => entry.types.some((type) => type.startsWith('image/')));
+      const type = item?.types.find((value) => value.startsWith('image/'));
+      if (item && type) readImage(new File([await item.getType(type)], 'clipboard.png', { type }));
+    } catch { setError('Clipboard image access is unavailable. Choose an image file instead.'); }
   };
 
   return (
-    <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#081122_45%,_#0b1324_100%)] text-slate-100">
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] bg-[size:28px_28px] opacity-30" />
-
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="animate-blob-one absolute -left-24 top-10 h-72 w-72 rounded-full bg-cyan-400/20 blur-3xl" />
-        <div className="animate-blob-two absolute right-[-6rem] top-1/3 h-80 w-80 rounded-full bg-indigo-500/20 blur-3xl" />
-        <div className="animate-blob-three absolute bottom-0 left-1/3 h-64 w-64 rounded-full bg-emerald-400/10 blur-3xl" />
-      </div>
-
-      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 pb-24 sm:px-6 lg:px-8">
-        <header className="relative z-30 mb-6 flex flex-col gap-4 rounded-[2rem] border border-white/10 bg-white/5 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.18)] backdrop-blur-xl sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+    <div className="app-canvas min-h-screen">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:p-3 focus:text-teal-800">Skip to content</a>
+      <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col px-4 py-5 sm:px-6 lg:px-8">
+        <header className="app-header relative z-30 mb-6 flex items-center justify-between gap-4 rounded-2xl px-5 py-4">
           <div className="flex items-start gap-4">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-lg shadow-cyan-500/20">
+            <div className="brand-mark flex h-12 w-12 shrink-0 items-center justify-center rounded-xl">
               <Shield className="h-7 w-7" />
             </div>
             <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">TruthLens AI</p>
-              <h1 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">
-                Smarter misinformation scans that feel alive.
-              </h1>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
-                Paste text, links, or batches of headlines. TruthLens breaks claims apart, scores credibility, and keeps a shareable record of every scan.
-              </p>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-teal-700 dark:text-teal-300">Evidence, made clear</p>
+              <p className="font-editorial text-2xl font-bold text-slate-950 dark:text-white">TruthLens <span className="text-teal-700 dark:text-teal-300">AI</span></p>
             </div>
           </div>
 
@@ -397,16 +504,13 @@ function App() {
             <button
               type="button"
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:hover:bg-white/10"
             >
               {theme === 'dark' ? <SunMedium className="h-4 w-4" /> : <MoonStar className="h-4 w-4" />}
               {theme === 'dark' ? 'Light mode' : 'Dark mode'}
             </button>
 
-            <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-100">
-              <Bot className="h-4 w-4" />
-              {hasSupabaseConfig ? 'Supabase ready' : 'Demo mode'}
-            </span>
+            <button type="button" onClick={() => setMobileNavOpen((open) => !open)} aria-label="Toggle navigation" aria-expanded={mobileNavOpen} className="nav-toggle rounded-xl border border-slate-300 p-2 text-slate-700 dark:border-slate-700 dark:text-slate-200 lg:hidden"><Menu className="h-5 w-5" /></button>
 
             <div className="relative" ref={accountRef}>
               <button
@@ -414,37 +518,38 @@ function App() {
                 onClick={() => setAccountOpen((open) => !open)}
                 className={`inline-flex h-10 w-10 items-center justify-center rounded-full border transition ${
                   session
-                    ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-50'
-                    : 'border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+                    ? 'border-cyan-500/40 bg-cyan-100 text-cyan-700 dark:bg-cyan-400/15 dark:text-cyan-50'
+                    : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10'
                 }`}
                 aria-label="Account"
+                aria-expanded={accountOpen}
               >
                 <User className="h-4 w-4" />
               </button>
 
               {accountOpen && (
-                <div className="absolute right-0 z-20 mt-2 w-80 rounded-[1.5rem] border border-white/10 bg-slate-950/95 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.4)] backdrop-blur-xl">
+                <div className="absolute right-0 z-20 mt-2 w-80 rounded-[1.5rem] border border-slate-200 bg-white/95 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.15)] backdrop-blur-xl dark:border-white/10 dark:bg-slate-950/95 dark:shadow-[0_20px_60px_rgba(15,23,42,0.4)]">
                   <div className="flex items-center justify-between gap-4">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Account</p>
-                      <h2 className="mt-1 text-sm font-bold text-white">History and sync</h2>
+                      <p className="text-xs uppercase tracking-[0.35em] text-cyan-600 dark:text-cyan-200/70">Account</p>
+                      <h2 className="mt-1 text-sm font-bold text-slate-900 dark:text-white">History and sync</h2>
                     </div>
                     <History className="h-5 w-5 text-cyan-200" />
                   </div>
 
                   {supabase ? (
                     <div className="mt-4 space-y-4">
-                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/5">
                         {session ? (
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-white">{session.email || session.id}</p>
-                              <p className="text-xs text-slate-400">Signed in with Supabase Auth</p>
+                              <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{session.email || session.id}</p>
+                              <p className="text-xs text-slate-500 dark:text-slate-400">Signed in with Supabase Auth</p>
                             </div>
                             <button
                               type="button"
                               onClick={() => void signOut()}
-                              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+                              className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:hover:bg-white/10"
                             >
                               <LogOut className="h-4 w-4" />
                               Sign out
@@ -452,17 +557,19 @@ function App() {
                           </div>
                         ) : (
                           <div className="space-y-3">
+                            <label htmlFor="account-email" className="block text-xs font-semibold text-slate-700 dark:text-slate-200">Email address</label>
                             <input
+                              id="account-email"
                               type="email"
                               value={email}
                               onChange={(event) => setEmail(event.target.value)}
                               placeholder="you@example.com"
-                              className="w-full rounded-2xl border border-white/10 bg-slate-950/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-400/40"
+                              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-cyan-500/60 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40"
                             />
                             <button
                               type="button"
                               onClick={() => void signIn()}
-                              className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-white px-4 py-3 text-sm font-bold text-slate-950 transition hover:-translate-y-0.5"
+                              className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:-translate-y-0.5 dark:bg-white dark:text-slate-950"
                             >
                               <LogIn className="h-4 w-4" />
                               Email me a sign-in link
@@ -470,15 +577,15 @@ function App() {
                           </div>
                         )}
 
-                        {authMessage && <p className="mt-3 text-sm text-slate-300">{authMessage}</p>}
+                        {authMessage && <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">{authMessage}</p>}
                       </div>
 
-                      <p className="text-sm leading-6 text-slate-400">
+                      <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
                         Signed-in users can sync their scan history to Supabase. Everyone else keeps a local history in the browser.
                       </p>
                     </div>
                   ) : (
-                    <p className="mt-4 text-sm leading-6 text-slate-400">
+                    <p className="mt-4 text-sm leading-6 text-slate-500 dark:text-slate-400">
                       Add your Supabase environment variables to enable sign-in, synced history, and public scan pages.
                     </p>
                   )}
@@ -488,34 +595,45 @@ function App() {
           </div>
         </header>
 
-        <main className="flex flex-1 flex-col gap-6">
+        <div className="grid flex-1 gap-7 lg:grid-cols-[14rem_minmax(0,1fr)]">
+          <AppNavigation active={route.kind === 'scan' || route.kind === 'privacy' || route.kind === 'terms' ? 'home' : route.kind} mobileOpen={mobileNavOpen} onNavigate={setInternalRoute} />
+        <main id="main-content" className="flex min-w-0 flex-col gap-6">
+          {authMessage && route.kind !== 'home' && <p role="status" className="rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-900 dark:border-teal-800 dark:bg-teal-950/40 dark:text-teal-100">{authMessage}</p>}
           <section className="space-y-6">
-            {route.kind === 'scan' ? (
+            {route.kind === 'privacy' || route.kind === 'terms' ? (
+              <PolicyPage title={route.kind === 'privacy' ? 'Privacy Policy' : 'Terms of Use'} onBack={() => setInternalRoute('home')} content={route.kind === 'privacy' ? ['TruthLens processes the text, URLs, and images you submit to provide an analysis. Signed-in users may also have an email address and scan history stored in Supabase.', 'We do not sell or share your personal information. Guest history stays in your browser; synced history is stored with Supabase. To request deletion, sign out and contact hello@truthlens.ai.'] : ['TruthLens is an AI-assisted information analysis tool. Results can be wrong and are not legal, medical, financial, or professional advice.', 'Use the service fairly and verify important claims with reliable sources. You are responsible for decisions made using the service.']} />
+            ) : route.kind === 'watchlist' ? (
+              session ? <Watchlist enabled refreshToken={watchlistRefresh} /> : <section className="glass-panel rounded-2xl p-8"><h1 className="font-editorial text-3xl font-bold">Your watchlist</h1><p className="mt-3 text-slate-600 dark:text-slate-300">Sign in from the account menu to save and revisit claims.</p></section>
+            ) : route.kind === 'trending' ? (
+              <TrendingPage scans={trendingScans} status={trendingStatus} onOpen={openScan} />
+            ) : route.kind === 'history' ? (
+              <div className="space-y-6"><div><p className="eyebrow">Your research</p><h1 className="font-editorial mt-2 text-4xl font-bold">Scan history</h1><p className="mt-2 text-slate-600 dark:text-slate-300">Review previous claims and see how your checks add up.</p></div><Dashboard history={history} onClear={() => { if (window.confirm('Clear all local scan history?')) { saveLocalHistory([], session?.id); setHistory([]); } }} /></div>
+            ) : route.kind === 'scan' ? (
               <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
                 <button
                   type="button"
                   onClick={() => {
-                    window.history.pushState({}, '', '/');
-                    setRoute({ kind: 'home' });
+                    setInternalRoute('home');
                   }}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white/10 hover:text-white dark:text-slate-200"
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10 dark:hover:text-white"
                 >
                   <ArrowLeft className="h-4 w-4" />
                   Back to scanner
                 </button>
 
                 <div className="mt-5">
+                  {error && <p role="alert" className="mb-4 rounded-xl border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-100">{error}</p>}
                   {currentResult ? (
-                    <ResultCard result={currentResult} onCopyLink={copyShareLink} />
+                    <ResultCard key={currentResult.id} result={currentResult} revisions={revisions} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onWatch={(scan) => void watchClaim(scan)} onFeedback={(rating, comment) => void submitFeedback(currentResult, rating, comment)} />
                   ) : notFound ? (
-                    <div className="rounded-[1.75rem] border border-dashed border-white/10 bg-white/5 p-8 text-center">
-                      <p className="text-xl font-bold text-white">This scan link has no saved data yet.</p>
-                      <p className="mt-2 text-sm text-slate-300">
+                    <div className="rounded-[1.75rem] border border-dashed border-slate-300 bg-slate-50 p-8 text-center dark:border-white/10 dark:bg-white/5">
+                      <p className="text-xl font-bold text-slate-900 dark:text-white">This scan link has no saved data yet.</p>
+                      <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
                         The share page works best after a scan has been saved locally or synced to Supabase.
                       </p>
                     </div>
                   ) : (
-                    <div className="rounded-[1.75rem] border border-white/10 bg-white/5 p-8 text-center text-slate-300">
+                    <div className="rounded-[1.75rem] border border-slate-300 bg-slate-50 p-8 text-center text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
                       Loading scan...
                     </div>
                   )}
@@ -523,98 +641,21 @@ function App() {
               </div>
             ) : (
               <>
-                <form onSubmit={startAnalysis} className="glass-panel rounded-[2rem] p-5 sm:p-6">
-                  <div className="flex flex-wrap gap-2">
-                    <ModeButton active={mode === 'single'} icon={<TextCursorInput className="h-4 w-4" />} label="Single" onClick={() => setMode('single')} />
-                    <ModeButton active={mode === 'batch'} icon={<Plus className="h-4 w-4" />} label="Batch" onClick={() => setMode('batch')} />
-                  </div>
+                <div className="scanner-intro"><p className="eyebrow">A clearer view of the facts</p><h1 className="font-editorial mt-2 max-w-3xl text-4xl font-bold leading-tight sm:text-5xl">Check a claim. <span className="text-teal-700 dark:text-teal-300">Understand the evidence.</span></h1><p className="mt-4 max-w-2xl text-base leading-7 text-slate-600 dark:text-slate-300">Paste a headline, link, or image. TruthLens breaks down the claim and shows what the available sources support.</p>{usageCount !== null && <p className="mt-4 text-sm font-semibold text-teal-700 dark:text-teal-300">{usageCount.toLocaleString()} claims analyzed</p>}</div>
+                <ScannerForm formRef={scanFormRef} onSubmit={startAnalysis} mode={mode} changeMode={changeMode} inputKind={inputKind} setInputKind={setInputKind} singleInput={singleInput} setSingleInput={setSingleInput} compareInput={compareInput} setCompareInput={setCompareInput} compareInputKind={compareInputKind} setCompareInputKind={setCompareInputKind} batchInput={batchInput} setBatchInput={setBatchInput} imageData={imageData} readImage={readImage} pasteImage={pasteImage} loading={loading} loadingMessage={loadingMessage} error={error} retrySeconds={retrySeconds} outputLanguage={outputLanguage} setOutputLanguage={setOutputLanguage} setError={setError} />
 
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <ModeButton active={inputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text input" onClick={() => setInputKind('text')} />
-                    <ModeButton active={inputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL input" onClick={() => setInputKind('url')} />
-                  </div>
-
-                  <div className="mt-5 space-y-3">
-                    <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">
-                      {mode === 'batch' ? 'Paste one headline or URL per line' : inputKind === 'url' ? 'Paste a link to scan' : 'Paste a message or headline'}
-                    </label>
-
-                    {mode === 'batch' ? (
-                      <textarea
-                        value={batchInput}
-                        onChange={(event) => setBatchInput(event.target.value)}
-                        placeholder={'Headline one\nHeadline two\nhttps://example.com/story'}
-                        className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/20"
-                        disabled={loading}
-                      />
-                    ) : (
-                      <textarea
-                        value={singleInput}
-                        onChange={(event) => setSingleInput(event.target.value)}
-                        placeholder={
-                          inputKind === 'url'
-                            ? 'https://news.example.com/story'
-                            : 'Hot water cures all viruses. Share immediately!'
-                        }
-                        className="min-h-44 w-full rounded-[1.5rem] border border-white/10 bg-slate-950/30 px-4 py-4 text-base leading-7 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/20"
-                        disabled={loading}
-                      />
-                    )}
-                  </div>
-
-                  <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <button
-                      type="submit"
-                      disabled={loading}
-                      className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-5 py-3 text-sm font-bold text-slate-950 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                      {loading ? loadingMessage : 'Analyze claim'}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        let nextIndex = Math.floor(Math.random() * examplePool.length);
-                        if (examplePool.length > 1 && nextIndex === lastExampleIndex.current) {
-                          nextIndex = (nextIndex + 1) % examplePool.length;
-                        }
-                        lastExampleIndex.current = nextIndex;
-                        const example = examplePool[nextIndex];
-                        setSingleInput(example.single);
-                        setBatchInput(example.batch);
-                        setError(null);
-                      }}
-                      className="inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
-                    >
-                      <Sparkles className="h-4 w-4" />
-                      Load examples
-                    </button>
-                  </div>
-
-                  {error && (
-                    <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-                      <p>{error}</p>
-                      {retryAfterSeconds > 0 && (
-                        <p className="mt-1 text-rose-100/80">
-                          Try again in {Math.floor(retryAfterSeconds / 60)}:{String(retryAfterSeconds % 60).padStart(2, '0')}.
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </form>
-
-                {currentResult && <ResultCard result={currentResult} onCopyLink={copyShareLink} />}
+                {currentResult && <ResultCard key={currentResult.id} result={currentResult} revisions={revisions} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onWatch={(scan) => void watchClaim(scan)} onFeedback={(rating, comment) => void submitFeedback(currentResult, rating, comment)} />}
+                {compareResult && mode === 'compare' && currentResult && <CompareView left={currentResult} right={compareResult} />}
 
                 {batchResults.length > 0 && mode === 'batch' && (
                   <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
                     <div className="mb-4 flex items-center justify-between gap-4">
                       <div>
-                        <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Batch results</p>
-                        <h2 className="mt-1 text-xl font-bold text-white">{batchResults.length} items scanned</h2>
+                        <p className="text-xs uppercase tracking-[0.35em] text-cyan-600 dark:text-cyan-200/70">Batch results</p>
+                        <h2 className="mt-1 text-xl font-bold text-slate-900 dark:text-white">{batchResults.length} items scanned</h2>
                       </div>
-                      <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm font-semibold text-slate-300">
-                        {batchResults.filter((scan) => scan.engine === 'gemini').length} AI backed
+                      <span className="rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
+                        {batchResults.filter((scan) => scan.engine === 'gemini' || scan.engine === 'groq').length} AI backed
                       </span>
                     </div>
                     <div className="space-y-4">
@@ -623,17 +664,18 @@ function App() {
                           key={scan.id}
                           type="button"
                           onClick={() => openScan(scan.id)}
-                          className="w-full rounded-[1.5rem] border border-white/10 bg-white/5 p-4 text-left transition hover:-translate-y-0.5 hover:bg-white/10"
+                          className="w-full rounded-[1.5rem] border border-slate-200 bg-white/80 p-4 text-left transition hover:-translate-y-0.5 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
                         >
                           <div className="flex items-center justify-between gap-4">
                             <div>
-                              <p className="font-semibold text-white">{scan.sourceTitle || scan.input}</p>
-                              <p className="mt-1 text-sm text-slate-400">{scan.summary}</p>
+                              <p className="font-semibold text-slate-900 dark:text-white">{scan.sourceTitle || scan.input}</p>
+                              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{scan.summary}</p>
                             </div>
-                            <span className="text-sm font-bold text-cyan-200">{scan.credibilityScore}/100</span>
+                            <span className="text-sm font-bold text-cyan-700 dark:text-cyan-200">{scan.credibilityScore}/100</span>
                           </div>
                         </button>
                       ))}
+                      {batchErrors.length > 0 && <div className="rounded-2xl border border-amber-400/20 bg-amber-50 p-4 text-sm text-amber-900 dark:bg-amber-400/10 dark:text-amber-100"><p className="font-semibold">Skipped items</p><ul className="mt-2 space-y-1">{batchErrors.map((item) => <li key={item.input} className="truncate">{item.input}: {item.message}</li>)}</ul></div>}
                     </div>
                   </div>
                 )}
@@ -641,22 +683,13 @@ function App() {
             )}
           </section>
 
-          <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
+          {(route.kind === 'home' || route.kind === 'history') && <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">Recent</p>
-                  <h2 className="mt-1 text-xl font-bold text-white">Saved scans</h2>
+                  <p className="text-xs uppercase tracking-[0.35em] text-cyan-600 dark:text-cyan-200/70">Recent</p>
+                  <h2 className="font-editorial mt-1 text-2xl font-bold text-slate-900 dark:text-white">{route.kind === 'history' ? 'All saved scans' : 'Latest scans'}</h2>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    saveLocalHistory([]);
-                    setHistory([]);
-                  }}
-                  className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
-                >
-                  Clear local
-                </button>
+                {route.kind === 'home' && <button type="button" onClick={() => setInternalRoute('history')} className="text-sm font-semibold text-teal-700 hover:underline dark:text-teal-300">View history ?</button>}
               </div>
 
               <div className="mt-4 space-y-3">
@@ -666,79 +699,47 @@ function App() {
                       key={scan.id}
                       type="button"
                       onClick={() => openScan(scan.id)}
-                      className="w-full rounded-2xl border border-white/10 bg-white/5 p-4 text-left transition hover:-translate-y-0.5 hover:bg-white/10"
+                      className="w-full rounded-2xl border border-slate-200 bg-white/80 p-4 text-left transition hover:-translate-y-0.5 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
                     >
                       <div className="flex items-center justify-between gap-4">
                         <div className="min-w-0">
-                          <p className="truncate font-semibold text-white">{scan.sourceTitle || scan.input}</p>
-                          <p className="mt-1 truncate text-sm text-slate-400">{scan.summary}</p>
+                          <p className="truncate font-semibold text-slate-900 dark:text-white">{scan.sourceTitle || scan.input}</p>
+                          <p className="mt-1 truncate text-sm text-slate-500 dark:text-slate-400">{scan.summary}</p>
                         </div>
-                        <span className="text-sm font-bold text-cyan-200">{scan.credibilityScore}</span>
+                        <span className="text-sm font-bold text-cyan-700 dark:text-cyan-200">{scan.credibilityScore}</span>
                       </div>
                     </button>
                   ))
                 ) : (
-                  <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-5 text-sm text-slate-400">
+                  <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-500 dark:border-white/10 dark:bg-white/5 dark:text-slate-400">
                     No scans yet. Run one and we’ll keep it here.
                   </div>
                 )}
               </div>
-            </section>
+            </section>}
 
-            <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
-              <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                <Upload className="h-4 w-4 text-cyan-200" />
-                What’s new
+            {route.kind === 'home' && <section className="glass-panel rounded-2xl p-5 sm:p-6">
+              <p className="eyebrow">Read with care</p>
+              <h2 className="font-editorial mt-2 text-2xl font-bold">How to use an assessment</h2>
+              <div className="mt-4 grid gap-4 text-sm leading-6 text-slate-600 dark:text-slate-300 sm:grid-cols-3">
+                <p><strong className="block text-slate-900 dark:text-white">1. Read the summary</strong>See the main conclusion and any limits.</p>
+                <p><strong className="block text-slate-900 dark:text-white">2. Check each claim</strong>Review the explanation for individual statements.</p>
+                <p><strong className="block text-slate-900 dark:text-white">3. Open the sources</strong>Verify the context before sharing or acting.</p>
               </div>
-              <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-300">
-                <li>URL mode fetches page metadata before scoring.</li>
-                <li>Batch mode scans multiple lines in one go.</li>
-                <li>Results show confidence, claim breakdowns, and shareable cards.</li>
-                <li>History is saved locally, and Supabase sync kicks in when you sign in.</li>
-                <li>Public scan pages use `/scan/:id` when a scan has been saved.</li>
-              </ul>
-            </section>
+            </section>}
+
+            {route.kind === 'history' && <AdminFeedback enabled={Boolean(session?.isAdmin)} />}
         </main>
 
-        <footer
-          className={`fixed inset-x-0 bottom-0 z-30 transition-all duration-300 ${
-            footerVisible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
-          }`}
-        >
-          <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 border-t border-white/10 bg-slate-950/90 px-4 py-3 text-xs text-slate-400 backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
-            <div className="flex items-center gap-2 font-semibold text-slate-300">
-              <Shield className="h-3.5 w-3.5 text-cyan-200" />
-              TruthLens AI
-            </div>
-
-            <nav className="flex flex-wrap items-center gap-4">
-              <a href="/privacy" className="transition hover:text-white">
-                Privacy Policy
-              </a>
-              <a href="/terms" className="transition hover:text-white">
-                Terms
-              </a>
-              <a href="mailto:hello@truthlens.ai" className="transition hover:text-white">
-                Contact
-              </a>
-              <a
-                href="https://github.com/Devx2107/TruthLens_AI"
-                target="_blank"
-                rel="noreferrer"
-                className="transition hover:text-white"
-              >
-                GitHub
-              </a>
-              <button
-                type="button"
-                onClick={() => void copyText(window.location.origin)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
-              >
-                <Copy className="h-3 w-3" />
-                Copy app URL
-              </button>
-            </nav>
-          </div>
+        </div>
+        <footer className="app-footer mt-10 flex flex-wrap items-center justify-between gap-4 border-t border-slate-200 py-6 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+          <span>© {new Date().getFullYear()} TruthLens AI · Read with care.</span>
+          <nav aria-label="Footer navigation" className="flex flex-wrap gap-x-5 gap-y-2">
+            <a href="/privacy" onClick={(event) => { event.preventDefault(); setInternalRoute('privacy'); }}>Privacy</a>
+            <a href="/terms" onClick={(event) => { event.preventDefault(); setInternalRoute('terms'); }}>Terms</a>
+            <a href="mailto:hello@truthlens.ai">Contact</a>
+            <a href="https://github.com/Devx2107/TruthLens_AI" target="_blank" rel="noreferrer">GitHub</a>
+          </nav>
         </footer>
       </div>
     </div>

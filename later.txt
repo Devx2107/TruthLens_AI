@@ -1,0 +1,11 @@
+# Do These Later (High Priority)
+
+## WhatsApp Share Target (PWA)
+Register TruthLens as an Android share target via `manifest.webmanifest`.
+Someone gets a suspicious WhatsApp forward → taps Share → selects TruthLens → instant result.
+Zero friction. India's #1 use case. Look up "Web Share Target API".
+
+## Telegram Bot
+Forward suspicious message to a bot → bot replies with credibility score.
+Thin wrapper around the existing edge function. Telegram Bot API = simple HTTP webhooks.
+Start here before WhatsApp Business API (simpler, no approval needed)./

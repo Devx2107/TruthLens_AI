@@ -1,96 +1,140 @@
 # TruthLens AI
 
-TruthLens is a full-stack misinformation analysis app. Paste a message, headline, or URL—or scan several inputs in batch mode—to get a credibility score, risk level, manipulation signals, claim-by-claim reasoning, and a shareable result page.
+A full-stack misinformation detection web app powered primarily by Groq, with Google Gemini as a text backup and image-analysis provider.
 
-The app is decision support, not an authority: scores are model-assisted estimates and should be checked against the source and independent reporting.
+## Features
 
-## What it does
+- Real-time misinformation analysis using Groq, with Gemini backup
+- Credibility scoring (0-100)
+- Risk level assessment (Low/Medium/High)
+- Detection of manipulation techniques
+- Visual credibility meter with color-coded indicators
+- Example messages for testing (fake and real news)
+- Clean, modern, responsive UI
+- Google Fact Check Tools matches with evidence strength labels
+- English, Hindi, or input-language reports
+- Signed-in claim watchlists and correction history
+- Rich source comparison, feedback review, PNG sharing, and printable PDF reports
+- Browser extension capture for selected text, headlines, and readable articles
 
-- Analyzes text and URLs with Google Gemini through a Supabase Edge Function.
-- Fetches URL metadata and readable page excerpts before analysis.
-- Adds a transparent domain reputation signal to URL results. This describes the publisher domain, not whether a specific article is true.
-- Breaks longer inputs into individual claims with verdicts, confidence, rationale, and scores.
-- Supports single scans and one-input-per-line batch scans.
-- Saves scans locally, with optional Supabase Auth magic-link sign-in for synced history.
-- Publishes shareable `/scan/:id` pages and downloadable result cards.
-- Uses a local heuristic fallback when Supabase/Gemini is not configured.
-- Applies a server-side rate limit of 20 requests per five-minute scope window and shows a retry countdown in the UI.
+## Tech Stack
 
-## Stack
+**Frontend:**
+- React 18
+- TypeScript
+- Vite
+- Tailwind CSS
+- Lucide React (icons)
 
-- React 18, TypeScript, Vite, Tailwind CSS, Lucide React
-- Supabase Edge Functions, Postgres, Row Level Security, Supabase Auth
-- Google Gemini API with structured JSON output
+**Backend:**
+- Supabase Edge Functions
+- Groq API and Google Gemini API
 
-## Setup
+## Prerequisites
+
+Before running the app, you need:
+
+1. A Groq API key and a Google Gemini API key for backup and image analysis
+   - Get one at: https://aistudio.google.com/app/apikey
+   - The backend currently targets `gemini-3.5-flash`. If Google deprecates this model later, update the model name in `supabase/functions/analyze/index.ts`.
+
+## Setup Instructions
+
+### 1. Install Dependencies
 
 ```bash
 npm install
 ```
 
-Create a `.env` file with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Without these values, the app runs in local demo mode.
+### 2. Configure provider API keys
 
-Then:
+The app requires `GROQ_API_KEY` for text/URL analysis and `GEMINI_API_KEY` for image analysis and text backup. Configure them in your Supabase project:
 
-1. Apply `supabase/migrations/202606290001_truthlens.sql`.
-2. Deploy `supabase/functions/analyze/index.ts` as the `analyze` Edge Function.
-3. Add `GEMINI_API_KEY` as an Edge Function secret.
-4. Optionally set `GEMINI_MODEL`; it defaults to `gemini-3.5-flash`.
+1. Go to your Supabase project dashboard
+2. Navigate to Edge Functions secrets
+3. Add `GROQ_API_KEY` and `GEMINI_API_KEY` to the Edge Function secrets
 
-Get a Gemini key from [Google AI Studio](https://aistudio.google.com/app/apikey). Keep it server-side; never put it in a `VITE_` variable.
+Optionally add `GOOGLE_FACT_CHECK_API_KEY` to show verified matches from Google Fact Check Tools. Without it, analysis still works and shows related reporting only.
 
-Run the app and checks with:
+The analysis function tries Groq first for text and URLs, then Gemini. Images use Gemini Vision. If all applicable providers fail, the app returns a retryable error and does not invent a local credibility score. Set `GROQ_MODEL` to override the default `llama-3.3-70b-versatile` model.
+
+To let the backend retrieve article text, set `URL_FETCH_HOSTS` to a comma-separated allowlist such as `reuters.com,apnews.com,bbc.com`. Unlisted URLs are analyzed as submitted links without a server-side fetch. Every redirect must remain on the allowlist.
+
+### 3. Run the Development Server
 
 ```bash
 npm run dev
-npm run typecheck
-npm run lint
+```
+
+The app will be available at `http://localhost:5173`
+
+Apply `supabase/migrations/202609250001_feature_suite.sql` and redeploy the `analyze` function before using watchlists, correction history, feedback review, or fact-check matches. Admin review appears when the signed-in user's Supabase `app_metadata.role` is `admin`.
+
+### 4. Build for Production
+
+```bash
 npm run build
 ```
 
-The development server runs at `http://localhost:5173`.
+## How to Use
 
-## API
+1. **Enter a message**: Paste any news headline or message into the text box
+2. **Click "Analyze Claim"**: The app sends text and URLs to Groq, with Gemini available as backup
+3. **View results**: See the credibility score, risk level, manipulation techniques, and detailed explanation
 
-`POST /functions/v1/analyze`
+### Try the Examples
 
-Single input:
+Click the example buttons to quickly test the analyzer:
+- **Fake News Example**: "Hot water cures all viruses. Share immediately!"
+- **Real News Example**: "ISRO launches new satellite to monitor climate change."
 
-```json
-{ "mode": "single", "input": "https://example.com/article", "inputType": "url" }
+## Project Structure
+
+```
+├── src/
+│   ├── components/
+│   │   ├── CredibilityMeter.tsx    # Visual credibility score meter
+│   │   └── ResultCard.tsx          # Analysis results display
+│   ├── types.ts                     # TypeScript interfaces
+│   ├── App.tsx                      # Main application component
+│   ├── main.tsx                     # React entry point
+│   └── index.css                    # Global styles
+├── supabase/
+│   └── functions/
+│       └── analyze/
+│           └── index.ts             # Edge function for AI analysis
+├── package.json
+└── vite.config.ts
 ```
 
-Batch input:
+## API Endpoint
 
+### POST /functions/v1/analyze
+
+Analyzes a message for misinformation using Groq first and Gemini as backup.
+
+**Request Body:**
 ```json
 {
-  "mode": "batch",
-  "items": [
-    { "input": "A headline", "inputType": "text" },
-    { "input": "https://example.com/article", "inputType": "url" }
-  ]
+  "message": "Your message to analyze"
 }
 ```
 
-Responses include `credibilityScore`, `confidence`, `riskLevel`, `claims`, `manipulationTechniques`, source metadata, and—when the input is a URL—`sourceCredibility`.
-
-## Data and privacy
-
-Local history stays in the browser. Signed-in history is stored per user in `analysis_history`. Public share pages are readable only when `is_public = true`. The service role is used by the Edge Function for cache and server-created records; client access is protected by RLS policies in the migration.
-
-## Project layout
-
-```text
-src/
-  App.tsx                 Scanner, auth, history, batch mode, sharing
-  components/             Result cards and credibility meter
-  lib/analyze.ts          API client and local fallback
-  lib/storage.ts          Browser persistence
-  types.ts                Shared result/request types
-supabase/
-  functions/analyze/      URL fetching, reputation, Gemini, caching, rate limit
-  migrations/             Tables, rate-limit RPC, and RLS policies
+**Response:**
+```json
+{
+  "credibilityScore": 85,
+  "riskLevel": "Low",
+  "manipulationTechniques": ["Sensationalism", "Urgency"],
+  "explanation": "Detailed explanation of the analysis"
+}
 ```
+
+## Color System
+
+- **Green**: Low risk (high credibility)
+- **Yellow**: Medium risk (moderate credibility)
+- **Red**: High risk (low credibility)
 
 ## License
 
