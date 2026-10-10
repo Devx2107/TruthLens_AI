@@ -9,17 +9,17 @@ interface CredibilityMeterProps {
 export default function CredibilityMeter({ score, confidence, riskLevel }: CredibilityMeterProps) {
   void React;
   const scoreColor =
-    riskLevel === 'Low' ? 'from-emerald-400 to-emerald-500' : riskLevel === 'Medium' ? 'from-amber-400 to-amber-500' : 'from-rose-400 to-rose-500';
+    riskLevel === 'Low' ? 'from-emerald-600 to-emerald-500' : riskLevel === 'Medium' ? 'from-amber-600 to-amber-500' : 'from-rose-600 to-rose-500';
 
   return (
     <div className="space-y-4">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Credibility score</p>
-          <p className="mt-1 text-4xl font-black text-slate-950 dark:text-white">{score}</p>
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-500 dark:text-slate-300">Credibility score</p>
+          <p className="mt-1 font-editorial text-5xl font-bold text-slate-950 dark:text-white">{score}</p>
         </div>
         <div className="text-right">
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Confidence</p>
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-500 dark:text-slate-300">Confidence</p>
           <p className="mt-1 text-xl font-semibold text-slate-700 dark:text-slate-200">{confidence}%</p>
         </div>
       </div>
@@ -31,9 +31,9 @@ export default function CredibilityMeter({ score, confidence, riskLevel }: Credi
             style={{ width: `${score}%` }}
           />
         </div>
-        <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-          <span>Low trust</span>
-          <span>High trust</span>
+        <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-300">
+          <span>Lower credibility</span>
+          <span>Higher credibility</span>
         </div>
       </div>
     </div>

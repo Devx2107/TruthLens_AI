@@ -1,112 +1,37 @@
-@tailwind base;
+﻿@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: light dark;
-}
-
-html {
-  scroll-behavior: smooth;
-}
-
-body {
-  @apply bg-slate-50 text-slate-900 antialiased;
-  min-height: 100vh;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-}
-
-.dark body {
-  @apply bg-slate-950 text-slate-100;
-}
-
-button,
-input,
-textarea {
-  font: inherit;
-}
-
-.dark {
-  color-scheme: dark;
-}
-
-.light {
-  color-scheme: light;
-}
-
-.glass-panel {
-  @apply border border-slate-200/80 bg-white/60 backdrop-blur-xl;
-}
-
-.dark .glass-panel {
-  @apply border-white/10 bg-white/5;
-}
-
-@keyframes revealUp {
-  from {
-    opacity: 0;
-    transform: translateY(18px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes popIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.animate-reveal-up {
-  animation: revealUp 0.5s ease-out both;
-}
-
-.animate-pop-in {
-  animation: popIn 0.45s ease-out both;
-}
-
-@keyframes floatBlobOne {
-  0%, 100% {
-    transform: translate(0, 0) scale(1);
-  }
-  50% {
-    transform: translate(40px, 60px) scale(1.15);
-  }
-}
-
-@keyframes floatBlobTwo {
-  0%, 100% {
-    transform: translate(0, 0) scale(1);
-  }
-  50% {
-    transform: translate(-50px, -30px) scale(1.1);
-  }
-}
-
-@keyframes floatBlobThree {
-  0%, 100% {
-    transform: translate(0, 0) scale(1);
-  }
-  50% {
-    transform: translate(30px, -50px) scale(1.2);
-  }
-}
-
-.animate-blob-one {
-  animation: floatBlobOne 18s ease-in-out infinite;
-}
-
-.animate-blob-two {
-  animation: floatBlobTwo 22s ease-in-out infinite;
-}
-
-.animate-blob-three {
-  animation: floatBlobThree 26s ease-in-out infinite;
-}
+:root { color-scheme: light; }
+html { scroll-behavior: smooth; }
+body { min-height: 100vh; margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f7f5f0; color: #172926; }
+.dark { color-scheme: dark; }
+.dark body { background: #101b1a; color: #e8efeb; }
+button, input, textarea, select { font: inherit; }
+button, a, input, textarea, select, summary { -webkit-tap-highlight-color: transparent; }
+:where(button, a, input, textarea, select, summary):focus-visible { outline: 3px solid #0f8077; outline-offset: 3px; }
+::selection { background: #bce6d8; color: #143d39; }
+.font-editorial { font-family: Georgia, Cambria, 'Times New Roman', serif; letter-spacing: -0.035em; }
+.eyebrow { color: #0b716b; font-size: .72rem; font-weight: 800; letter-spacing: .17em; text-transform: uppercase; }
+.dark .eyebrow { color: #82d2be; }
+.app-canvas { background: radial-gradient(circle at 82% 0%, #e7f0e9 0%, transparent 32%), #f7f5f0; color: #172926; }
+.dark .app-canvas { background: radial-gradient(circle at 82% 0%, #193630 0%, transparent 32%), #101b1a; color: #e8efeb; }
+.app-header, .app-sidebar, .glass-panel { border: 1px solid #e4e8e2; background: #fffefa; box-shadow: 0 8px 28px rgba(31, 62, 54, .035); }
+.dark .app-header, .dark .app-sidebar, .dark .glass-panel { border-color: #304340; background: #192725; box-shadow: none; }
+.brand-mark { background: #133e3a; color: #f6fbf8; }
+.dark .brand-mark { background: #b5e0d1; color: #153b35; }
+.nav-link { color: #556b65; transition: background .18s ease, color .18s ease; }
+.nav-link:hover { color: #0c625b; background: #edf5ef; }
+.nav-link-active, .nav-link-active:hover { color: #0d5c55; background: #e1f1e9; }
+.dark .nav-link { color: #bccbc5; }
+.dark .nav-link:hover, .dark .nav-link-active { color: #c7f2e3; background: #28453c; }
+.scanner-intro { padding: .75rem .25rem .25rem; }
+.app-footer a:hover { color: #0b716b; text-decoration: underline; }
+.dark .app-footer a:hover { color: #82d2be; }
+/* Existing Tailwind markup shares this surface token while components are migrated. */
+.glass-panel { backdrop-filter: none; }
+.dark .glass-panel { backdrop-filter: none; }
+@keyframes revealUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+.animate-reveal-up { animation: revealUp .35s ease-out both; }
+.animate-pop-in { animation: revealUp .28s ease-out both; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

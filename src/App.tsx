@@ -1,24 +1,18 @@
-import React, { FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
-  Bot,
-  Copy,
   History,
-  Link2,
-  Loader2,
   LogIn,
   LogOut,
   MoonStar,
-  Plus,
-  Search,
+  Menu,
   Shield,
-  Sparkles,
   SunMedium,
-  TextCursorInput,
-  Upload,
   User,
 } from 'lucide-react';
 import ResultCard from './components/ResultCard';
+import AppNavigation from './components/AppNavigation';
+import ScannerForm from './components/ScannerForm';
 import Dashboard from './components/Dashboard';
 import PolicyPage from './components/PolicyPage';
 import CompareView from './components/CompareView';
@@ -26,44 +20,23 @@ import TrendingPage from './components/TrendingPage';
 import Watchlist from './components/Watchlist';
 import AdminFeedback from './components/AdminFeedback';
 import type { AnalysisMode, AnalysisResult, InputKind, SessionSnapshot } from './types';
-import { analyzeRequest, detectInputKind, fetchPublicScan, fetchTrendingScans, loadUsageCount, loadUserHistory, setScanPublished, submitAnalysisFeedback } from './lib/analyze';
+import { analyzeRequest, fetchPublicScan, fetchTrendingScans, loadUsageCount, loadUserHistory, setScanPublished, submitAnalysisFeedback } from './lib/analyze';
 import { getLocalScan, getThemePreference, loadLocalHistory, saveLocalHistory, saveLocalScan, saveThemePreference, type ThemeMode } from './lib/storage';
-import { supabase, hasSupabaseConfig } from './lib/supabase';
+import { supabase } from './lib/supabase';
 import { addWatchlistClaim, loadScanRevisions } from './lib/features';
 
 void React;
 
-type RouteState = { kind: 'home' } | { kind: 'scan'; id: string } | { kind: 'privacy' } | { kind: 'terms' } | { kind: 'trending' };
+type RouteState = { kind: 'home' } | { kind: 'history' } | { kind: 'watchlist' } | { kind: 'scan'; id: string } | { kind: 'privacy' } | { kind: 'terms' } | { kind: 'trending' };
 
-const loadingStages = ['Reading message', 'Checking sources', 'Analyzing with Groq'];
-
-const examplePool: { single: string; batch: string }[] = [
-  {
-    single: 'Hot water cures all viruses. Share immediately!',
-    batch: 'Hot water cures all viruses. Share immediately!\nISRO launches a new satellite to monitor climate change.',
-  },
-  {
-    single: 'Scientists confirm coffee cures all diseases, share immediately!',
-    batch: 'Scientists confirm coffee cures all diseases, share immediately!\nWHO releases updated guidance on seasonal flu vaccines.',
-  },
-  {
-    single: 'They don\'t want you to know this one secret trick that cures diabetes overnight!',
-    batch: 'They don\'t want you to know this one secret trick that cures diabetes overnight!\nLocal city council approves new public park budget for next year.',
-  },
-  {
-    single: 'BREAKING: Government secretly adds mind-control chemicals to drinking water!!!',
-    batch: 'BREAKING: Government secretly adds mind-control chemicals to drinking water!!!\nNew bridge construction project completes ahead of schedule.',
-  },
-  {
-    single: 'Eating this common fruit seed kills cancer cells instantly, doctors are furious!',
-    batch: 'Eating this common fruit seed kills cancer cells instantly, doctors are furious!\nUniversity researchers publish peer-reviewed study on sleep patterns.',
-  },
-];
+const loadingStages = ['Reading input', 'Reviewing context', 'Preparing assessment'];
 
 function detectRoute(): RouteState {
   if (window.location.pathname === '/privacy') return { kind: 'privacy' };
   if (window.location.pathname === '/terms') return { kind: 'terms' };
   if (window.location.pathname === '/trending') return { kind: 'trending' };
+  if (window.location.pathname === '/history') return { kind: 'history' };
+  if (window.location.pathname === '/watchlist') return { kind: 'watchlist' };
   const match = window.location.pathname.match(/^\/scan\/([^/]+)$/i);
   if (match?.[1]) {
     return { kind: 'scan', id: decodeURIComponent(match[1]) };
@@ -83,33 +56,6 @@ function mergeHistory(primary: AnalysisResult[], secondary: AnalysisResult[]) {
   const map = new Map<string, AnalysisResult>();
   [...secondary, ...primary].forEach((item) => map.set(item.id, item));
   return [...map.values()].sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)).slice(0, 20);
-}
-
-function ModeButton({
-  active,
-  icon,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  icon: ReactNode;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition ${
-        active
-          ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-700 dark:text-cyan-50 shadow-[0_10px_30px_rgba(34,211,238,0.2)]'
-          : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white'
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
-  );
 }
 
 function App() {
@@ -136,6 +82,7 @@ function App() {
   const [usageCount, setUsageCount] = useState<number | null>(null);
   const [sharedScan, setSharedScan] = useState<AnalysisResult | null>(null);
   const [trendingScans, setTrendingScans] = useState<AnalysisResult[]>([]);
+  const [trendingStatus, setTrendingStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [notFound, setNotFound] = useState(false);
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [email, setEmail] = useState('');
@@ -143,11 +90,10 @@ function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement>(null);
   const scanFormRef = useRef<HTMLFormElement>(null);
-  const [footerVisible, setFooterVisible] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [outputLanguage, setOutputLanguage] = useState<'auto' | 'en' | 'hi'>('auto');
   const [revisions, setRevisions] = useState<AnalysisResult[]>([]);
   const [watchlistRefresh, setWatchlistRefresh] = useState(0);
-  const lastExampleIndex = useRef<number | null>(null);
 
   const loadingMessage = loadingStages[loadingStage % loadingStages.length];
 
@@ -202,7 +148,14 @@ function App() {
 
   useEffect(() => {
     if (route.kind !== 'trending') return;
-    void fetchTrendingScans().then(setTrendingScans);
+    let cancelled = false;
+    setTrendingStatus('loading');
+    void fetchTrendingScans().then((scans) => {
+      if (cancelled) return;
+      setTrendingScans(scans);
+      setTrendingStatus('ready');
+    }).catch(() => { if (!cancelled) setTrendingStatus('error'); });
+    return () => { cancelled = true; };
   }, [route.kind]);
 
   useEffect(() => {
@@ -215,7 +168,7 @@ function App() {
 
   useEffect(() => {
     setHistory(loadLocalHistory());
-    void loadUsageCount().then((count) => setUsageCount(count ?? loadLocalHistory().length));
+    void loadUsageCount().then((count) => setUsageCount(count));
   }, []);
 
   useEffect(() => {
@@ -277,18 +230,6 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [accountOpen]);
 
-  useEffect(() => {
-    const SCROLL_THRESHOLD = 120;
-
-    const handleScroll = () => {
-      setFooterVisible(window.scrollY > SCROLL_THRESHOLD);
-    };
-
-    handleScroll();
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
-
   const currentResult = route.kind === 'scan' ? sharedScan : result;
 
   useEffect(() => {
@@ -296,12 +237,12 @@ function App() {
     void loadScanRevisions(currentResult.id).then(setRevisions);
   }, [currentResult, session]);
 
-  const historyItems = useMemo(() => history.slice(0, 8), [history]);
+  const historyItems = useMemo(() => history.slice(0, route.kind === 'history' ? 20 : 3), [history, route.kind]);
 
   const persistScan = async (scan: AnalysisResult) => {
     saveLocalScan(scan, session?.id);
     setHistory((current) => mergeHistory([scan], current));
-    void loadUsageCount().then((count) => setUsageCount(count ?? loadLocalHistory(session?.id).length));
+    void loadUsageCount().then((count) => setUsageCount(count));
   };
 
   const startAnalysis = async (event: FormEvent) => {
@@ -403,6 +344,8 @@ function App() {
   const openScan = (scanId: string) => {
     window.history.pushState({}, '', `/scan/${scanId}`);
     setRoute({ kind: 'scan', id: scanId });
+    setMobileNavOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const copyShareLink = async (scan: AnalysisResult) => {
@@ -516,9 +459,11 @@ function App() {
     } catch (watchError) { setError(watchError instanceof Error ? watchError.message : 'Unable to watch this claim.'); }
   };
 
-  const setInternalRoute = (kind: 'home' | 'privacy' | 'terms' | 'trending') => {
+  const setInternalRoute = (kind: 'home' | 'history' | 'watchlist' | 'privacy' | 'terms' | 'trending') => {
     window.history.pushState({}, '', kind === 'home' ? '/' : `/${kind}`);
     setRoute({ kind });
+    setMobileNavOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const readImage = (file: File) => {
@@ -541,30 +486,17 @@ function App() {
   };
 
   return (
-    <div className={`min-h-screen overflow-hidden ${theme === 'dark' ? 'text-slate-100 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#081122_45%,_#0b1324_100%)]' : 'text-slate-900 bg-[radial-gradient(circle_at_top,_rgba(125,211,252,0.28),_transparent_32%),linear-gradient(180deg,_#f8fafc_0%,_#e0f2fe_55%,_#eef2ff_100%)]'}`}>
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] bg-[size:28px_28px] opacity-30" />
-
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="animate-blob-one absolute -left-24 top-10 h-72 w-72 rounded-full bg-cyan-400/20 blur-3xl" />
-        <div className="animate-blob-two absolute right-[-6rem] top-1/3 h-80 w-80 rounded-full bg-indigo-500/20 blur-3xl" />
-        <div className="animate-blob-three absolute bottom-0 left-1/3 h-64 w-64 rounded-full bg-emerald-400/10 blur-3xl" />
-      </div>
-
-      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 pb-40 sm:px-6 sm:pb-24 lg:px-8">
-        <header className="relative z-30 mb-6 flex flex-col gap-4 rounded-[2rem] border border-slate-200/80 bg-white/60 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.10)] backdrop-blur-xl dark:border-white/10 dark:bg-white/5 dark:shadow-[0_20px_80px_rgba(15,23,42,0.18)] sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+    <div className="app-canvas min-h-screen">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:p-3 focus:text-teal-800">Skip to content</a>
+      <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col px-4 py-5 sm:px-6 lg:px-8">
+        <header className="app-header relative z-30 mb-6 flex items-center justify-between gap-4 rounded-2xl px-5 py-4">
           <div className="flex items-start gap-4">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-lg shadow-cyan-500/20">
+            <div className="brand-mark flex h-12 w-12 shrink-0 items-center justify-center rounded-xl">
               <Shield className="h-7 w-7" />
             </div>
             <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-cyan-600 dark:text-cyan-200/80">TruthLens AI</p>
-              <h1 className="mt-1 text-2xl font-black tracking-tight text-slate-900 dark:text-white sm:text-3xl">
-                Smarter misinformation scans that feel alive.
-              </h1>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
-                Paste text, links, or batches of headlines. TruthLens breaks claims apart, scores credibility, and keeps a shareable record of every scan.
-              </p>
-              <p className="mt-3 text-sm font-semibold text-cyan-700 dark:text-cyan-200">{usageCount === null ? 'Analysing claims worldwide' : `${usageCount.toLocaleString()} claims analysed so far`}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-teal-700 dark:text-teal-300">Evidence, made clear</p>
+              <p className="font-editorial text-2xl font-bold text-slate-950 dark:text-white">TruthLens <span className="text-teal-700 dark:text-teal-300">AI</span></p>
             </div>
           </div>
 
@@ -578,10 +510,7 @@ function App() {
               {theme === 'dark' ? 'Light mode' : 'Dark mode'}
             </button>
 
-            <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100">
-              <Bot className="h-4 w-4" />
-              {hasSupabaseConfig ? 'Supabase ready' : 'Demo mode'}
-            </span>
+            <button type="button" onClick={() => setMobileNavOpen((open) => !open)} aria-label="Toggle navigation" aria-expanded={mobileNavOpen} className="nav-toggle rounded-xl border border-slate-300 p-2 text-slate-700 dark:border-slate-700 dark:text-slate-200 lg:hidden"><Menu className="h-5 w-5" /></button>
 
             <div className="relative" ref={accountRef}>
               <button
@@ -593,6 +522,7 @@ function App() {
                     : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10'
                 }`}
                 aria-label="Account"
+                aria-expanded={accountOpen}
               >
                 <User className="h-4 w-4" />
               </button>
@@ -627,7 +557,9 @@ function App() {
                           </div>
                         ) : (
                           <div className="space-y-3">
+                            <label htmlFor="account-email" className="block text-xs font-semibold text-slate-700 dark:text-slate-200">Email address</label>
                             <input
+                              id="account-email"
                               type="email"
                               value={email}
                               onChange={(event) => setEmail(event.target.value)}
@@ -663,12 +595,19 @@ function App() {
           </div>
         </header>
 
-        <main className="flex flex-1 flex-col gap-6">
+        <div className="grid flex-1 gap-7 lg:grid-cols-[14rem_minmax(0,1fr)]">
+          <AppNavigation active={route.kind === 'scan' || route.kind === 'privacy' || route.kind === 'terms' ? 'home' : route.kind} mobileOpen={mobileNavOpen} onNavigate={setInternalRoute} />
+        <main id="main-content" className="flex min-w-0 flex-col gap-6">
+          {authMessage && route.kind !== 'home' && <p role="status" className="rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-900 dark:border-teal-800 dark:bg-teal-950/40 dark:text-teal-100">{authMessage}</p>}
           <section className="space-y-6">
             {route.kind === 'privacy' || route.kind === 'terms' ? (
               <PolicyPage title={route.kind === 'privacy' ? 'Privacy Policy' : 'Terms of Use'} onBack={() => setInternalRoute('home')} content={route.kind === 'privacy' ? ['TruthLens processes the text, URLs, and images you submit to provide an analysis. Signed-in users may also have an email address and scan history stored in Supabase.', 'We do not sell or share your personal information. Guest history stays in your browser; synced history is stored with Supabase. To request deletion, sign out and contact hello@truthlens.ai.'] : ['TruthLens is an AI-assisted information analysis tool. Results can be wrong and are not legal, medical, financial, or professional advice.', 'Use the service fairly and verify important claims with reliable sources. You are responsible for decisions made using the service.']} />
+            ) : route.kind === 'watchlist' ? (
+              session ? <Watchlist enabled refreshToken={watchlistRefresh} /> : <section className="glass-panel rounded-2xl p-8"><h1 className="font-editorial text-3xl font-bold">Your watchlist</h1><p className="mt-3 text-slate-600 dark:text-slate-300">Sign in from the account menu to save and revisit claims.</p></section>
             ) : route.kind === 'trending' ? (
-              <TrendingPage scans={trendingScans} onOpen={openScan} />
+              <TrendingPage scans={trendingScans} status={trendingStatus} onOpen={openScan} />
+            ) : route.kind === 'history' ? (
+              <div className="space-y-6"><div><p className="eyebrow">Your research</p><h1 className="font-editorial mt-2 text-4xl font-bold">Scan history</h1><p className="mt-2 text-slate-600 dark:text-slate-300">Review previous claims and see how your checks add up.</p></div><Dashboard history={history} onClear={() => { if (window.confirm('Clear all local scan history?')) { saveLocalHistory([], session?.id); setHistory([]); } }} /></div>
             ) : route.kind === 'scan' ? (
               <div className="glass-panel rounded-[2rem] p-5 sm:p-6">
                 <button
@@ -683,6 +622,7 @@ function App() {
                 </button>
 
                 <div className="mt-5">
+                  {error && <p role="alert" className="mb-4 rounded-xl border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-100">{error}</p>}
                   {currentResult ? (
                     <ResultCard key={currentResult.id} result={currentResult} revisions={revisions} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onWatch={(scan) => void watchClaim(scan)} onFeedback={(rating, comment) => void submitFeedback(currentResult, rating, comment)} />
                   ) : notFound ? (
@@ -701,94 +641,8 @@ function App() {
               </div>
             ) : (
               <>
-                <form ref={scanFormRef} onSubmit={startAnalysis} className="glass-panel rounded-[2rem] p-5 sm:p-6">
-                  <div className="flex flex-wrap gap-2">
-                    <ModeButton active={mode === 'single'} icon={<TextCursorInput className="h-4 w-4" />} label="Single" onClick={() => changeMode('single')} />
-                    <ModeButton active={mode === 'batch'} icon={<Plus className="h-4 w-4" />} label="Batch" onClick={() => changeMode('batch')} />
-                    <ModeButton active={mode === 'compare'} icon={<Link2 className="h-4 w-4" />} label="Compare" onClick={() => changeMode('compare')} />
-                  </div>
-
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <ModeButton active={inputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text input" onClick={() => setInputKind('text')} />
-                    <ModeButton active={inputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL input" onClick={() => setInputKind('url')} />
-                    {mode !== 'batch' && <ModeButton active={inputKind === 'image'} icon={<Upload className="h-4 w-4" />} label="Image" onClick={() => setInputKind('image')} />}
-                  </div>
-
-                  <label className="mt-4 flex max-w-xs flex-col gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">Analysis language<select value={outputLanguage} onChange={(event) => setOutputLanguage(event.target.value as 'auto' | 'en' | 'hi')} className="rounded-2xl border border-slate-300 bg-white px-4 py-3 font-normal text-slate-900 dark:border-white/10 dark:bg-slate-950/30 dark:text-white"><option value="auto">Match the input</option><option value="en">English</option><option value="hi">Hindi</option></select></label>
-
-                  <div className="mt-5 space-y-3">
-                    <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">
-                      {mode === 'batch' ? 'Paste one headline or URL per line' : inputKind === 'url' ? 'Paste a link to scan' : inputKind === 'image' ? 'Upload or paste a screenshot' : 'Paste a message or headline'}
-                    </label>
-
-                    {mode === 'compare' ? <div className="grid gap-3 md:grid-cols-2"><div><div className="mb-2 flex gap-2"><ModeButton active={inputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text" onClick={() => setInputKind('text')} /><ModeButton active={inputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL" onClick={() => setInputKind('url')} /></div><textarea value={singleInput} onChange={(event) => setSingleInput(event.target.value)} placeholder="First claim" className="min-h-44 w-full rounded-[1.5rem] border border-slate-300 bg-white px-4 py-4 text-base leading-7 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40 dark:focus:ring-cyan-400/20" disabled={loading} /></div><div><div className="mb-2 flex gap-2"><ModeButton active={compareInputKind === 'text'} icon={<TextCursorInput className="h-4 w-4" />} label="Text" onClick={() => setCompareInputKind('text')} /><ModeButton active={compareInputKind === 'url'} icon={<Link2 className="h-4 w-4" />} label="URL" onClick={() => setCompareInputKind('url')} /></div><textarea value={compareInput} onChange={(event) => setCompareInput(event.target.value)} placeholder="Second claim" className="min-h-44 w-full rounded-[1.5rem] border border-slate-300 bg-white px-4 py-4 text-base leading-7 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40 dark:focus:ring-cyan-400/20" disabled={loading} /></div></div> : mode === 'batch' ? (
-                      <textarea
-                        value={batchInput}
-                        onChange={(event) => setBatchInput(event.target.value)}
-                        placeholder={'Headline one\nHeadline two\nhttps://example.com/story'}
-                        className="min-h-44 w-full rounded-[1.5rem] border border-slate-300 bg-white px-4 py-4 text-base leading-7 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40 dark:focus:ring-cyan-400/20"
-                        disabled={loading}
-                      />
-                    ) : inputKind === 'image' ? (
-                      <div className="rounded-[1.5rem] border border-dashed border-cyan-400/30 bg-slate-50 p-5 text-center dark:bg-slate-950/30">
-                        <input type="file" accept="image/*" onChange={(event) => event.target.files?.[0] && readImage(event.target.files[0])} disabled={loading} className="block w-full text-sm text-slate-600 dark:text-slate-300" />
-                        <button type="button" onClick={() => void pasteImage()} className="mt-3 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-white"><Upload className="mr-2 inline h-4 w-4" />Paste from clipboard</button>
-                        {imageData && <img src={imageData} alt="Selected preview" className="mx-auto mt-4 max-h-48 rounded-2xl" />}
-                      </div>
-                    ) : (
-                      <textarea
-                        value={singleInput}
-                        onChange={(event) => setSingleInput(event.target.value)}
-                        onPaste={(event) => { const pasted = event.clipboardData.getData('text'); if (detectInputKind(pasted) === 'url') setInputKind('url'); }}
-                        placeholder={
-                          inputKind === 'url'
-                            ? 'https://news.example.com/story'
-                            : 'Hot water cures all viruses. Share immediately!'
-                        }
-                        className="min-h-44 w-full rounded-[1.5rem] border border-slate-300 bg-white px-4 py-4 text-base leading-7 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 dark:border-white/10 dark:bg-slate-950/30 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-cyan-400/40 dark:focus:ring-cyan-400/20"
-                        disabled={loading}
-                      />
-                    )}
-                  </div>
-
-                  <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <button
-                      type="submit"
-                      disabled={loading}
-                      className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-5 py-3 text-sm font-bold text-slate-950 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                      {loading ? loadingMessage : 'Analyze claim'}
-                      {!loading && <span className="ml-1 hidden text-[11px] font-medium opacity-70 sm:inline">(Ctrl/Cmd+Enter)</span>}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        let nextIndex = Math.floor(Math.random() * examplePool.length);
-                        if (examplePool.length > 1 && nextIndex === lastExampleIndex.current) {
-                          nextIndex = (nextIndex + 1) % examplePool.length;
-                        }
-                        lastExampleIndex.current = nextIndex;
-                        const example = examplePool[nextIndex];
-                        setSingleInput(example.single);
-                        setBatchInput(example.batch);
-                        setError(null);
-                      }}
-                      className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:hover:bg-white/10"
-                    >
-                      <Sparkles className="h-4 w-4" />
-                      Load examples
-                    </button>
-                  </div>
-
-                  {error && (
-                    <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-50 px-4 py-3 text-sm text-rose-900 dark:bg-rose-500/10 dark:text-rose-100">
-                      {error}
-                      {retrySeconds !== null && retrySeconds > 0 && <span className="mt-1 block font-semibold">You can try again in {retrySeconds}s.</span>}
-                    </div>
-                  )}
-                </form>
+                <div className="scanner-intro"><p className="eyebrow">A clearer view of the facts</p><h1 className="font-editorial mt-2 max-w-3xl text-4xl font-bold leading-tight sm:text-5xl">Check a claim. <span className="text-teal-700 dark:text-teal-300">Understand the evidence.</span></h1><p className="mt-4 max-w-2xl text-base leading-7 text-slate-600 dark:text-slate-300">Paste a headline, link, or image. TruthLens breaks down the claim and shows what the available sources support.</p>{usageCount !== null && <p className="mt-4 text-sm font-semibold text-teal-700 dark:text-teal-300">{usageCount.toLocaleString()} claims analyzed</p>}</div>
+                <ScannerForm formRef={scanFormRef} onSubmit={startAnalysis} mode={mode} changeMode={changeMode} inputKind={inputKind} setInputKind={setInputKind} singleInput={singleInput} setSingleInput={setSingleInput} compareInput={compareInput} setCompareInput={setCompareInput} compareInputKind={compareInputKind} setCompareInputKind={setCompareInputKind} batchInput={batchInput} setBatchInput={setBatchInput} imageData={imageData} readImage={readImage} pasteImage={pasteImage} loading={loading} loadingMessage={loadingMessage} error={error} retrySeconds={retrySeconds} outputLanguage={outputLanguage} setOutputLanguage={setOutputLanguage} setError={setError} />
 
                 {currentResult && <ResultCard key={currentResult.id} result={currentResult} revisions={revisions} onCopyLink={copyShareLink} onUnpublish={currentResult.isPublic && session ? unpublishScan : undefined} onNewScan={startNewScan} onRefresh={() => void refreshScan(currentResult)} onWatch={(scan) => void watchClaim(scan)} onFeedback={(rating, comment) => void submitFeedback(currentResult, rating, comment)} />}
                 {compareResult && mode === 'compare' && currentResult && <CompareView left={currentResult} right={compareResult} />}
@@ -829,22 +683,13 @@ function App() {
             )}
           </section>
 
-          <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
+          {(route.kind === 'home' || route.kind === 'history') && <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <p className="text-xs uppercase tracking-[0.35em] text-cyan-600 dark:text-cyan-200/70">Recent</p>
-                  <h2 className="mt-1 text-xl font-bold text-slate-900 dark:text-white">Saved scans</h2>
+                  <h2 className="font-editorial mt-1 text-2xl font-bold text-slate-900 dark:text-white">{route.kind === 'history' ? 'All saved scans' : 'Latest scans'}</h2>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    saveLocalHistory([], session?.id);
-                    setHistory([]);
-                  }}
-                  className="rounded-full border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
-                >
-                  Clear local
-                </button>
+                {route.kind === 'home' && <button type="button" onClick={() => setInternalRoute('history')} className="text-sm font-semibold text-teal-700 hover:underline dark:text-teal-300">View history ?</button>}
               </div>
 
               <div className="mt-4 space-y-3">
@@ -871,69 +716,30 @@ function App() {
                   </div>
                 )}
               </div>
-            </section>
+            </section>}
 
-            <section className="glass-panel rounded-[2rem] p-5 sm:p-6">
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
-                <Upload className="h-4 w-4 text-cyan-600 dark:text-cyan-200" />
-                What's new
+            {route.kind === 'home' && <section className="glass-panel rounded-2xl p-5 sm:p-6">
+              <p className="eyebrow">Read with care</p>
+              <h2 className="font-editorial mt-2 text-2xl font-bold">How to use an assessment</h2>
+              <div className="mt-4 grid gap-4 text-sm leading-6 text-slate-600 dark:text-slate-300 sm:grid-cols-3">
+                <p><strong className="block text-slate-900 dark:text-white">1. Read the summary</strong>See the main conclusion and any limits.</p>
+                <p><strong className="block text-slate-900 dark:text-white">2. Check each claim</strong>Review the explanation for individual statements.</p>
+                <p><strong className="block text-slate-900 dark:text-white">3. Open the sources</strong>Verify the context before sharing or acting.</p>
               </div>
-              <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
-                <li>URL mode fetches page metadata before scoring.</li>
-                <li>Batch mode scans multiple lines in one go.</li>
-                <li>Results show confidence, claim breakdowns, and shareable cards.</li>
-                <li>History is saved locally, and Supabase sync kicks in when you sign in.</li>
-                <li>Public scan pages use `/scan/:id` when a scan has been saved.</li>
-              </ul>
-            </section>
+            </section>}
 
-            <Dashboard history={history} onClear={() => { if (window.confirm('Clear all local scan history?')) { saveLocalHistory([], session?.id); setHistory([]); } }} />
-            <Watchlist enabled={Boolean(session)} refreshToken={watchlistRefresh} />
-            <AdminFeedback enabled={Boolean(session?.isAdmin)} />
+            {route.kind === 'history' && <AdminFeedback enabled={Boolean(session?.isAdmin)} />}
         </main>
 
-        <footer
-          className={`fixed inset-x-0 bottom-0 z-30 transition-all duration-300 ${
-            footerVisible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
-          }`}
-        >
-          <div className="mx-auto flex max-h-[30vh] w-full max-w-7xl flex-col gap-3 overflow-y-auto border-t border-slate-200 bg-white/90 px-4 py-3 text-xs text-slate-500 backdrop-blur-xl dark:border-white/10 dark:bg-slate-950/90 dark:text-slate-400 sm:max-h-none sm:flex-row sm:items-center sm:justify-between sm:overflow-visible sm:px-6 lg:px-8">
-            <div className="flex items-center gap-2 font-semibold text-slate-700 dark:text-slate-300">
-              <Shield className="h-3.5 w-3.5 text-cyan-600 dark:text-cyan-200" />
-              TruthLens AI
-            </div>
-
-            <nav className="flex flex-wrap items-center gap-4">
-              <a href="/privacy" onClick={(event) => { event.preventDefault(); setInternalRoute('privacy'); }} className="transition hover:text-white">
-                Privacy Policy
-              </a>
-              <a href="/terms" onClick={(event) => { event.preventDefault(); setInternalRoute('terms'); }} className="transition hover:text-white">
-                Terms
-              </a>
-              <a href="/trending" onClick={(event) => { event.preventDefault(); setInternalRoute('trending'); }} className="transition hover:text-white">
-                Recently debunked
-              </a>
-              <a href="mailto:hello@truthlens.ai" className="transition hover:text-white">
-                Contact
-              </a>
-              <a
-                href="https://github.com/Devx2107/TruthLens_AI"
-                target="_blank"
-                rel="noreferrer"
-                className="transition hover:text-white"
-              >
-                GitHub
-              </a>
-              <button
-                type="button"
-                onClick={() => void copyText(window.location.origin)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 font-semibold text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
-              >
-                <Copy className="h-3 w-3" />
-                Copy app URL
-              </button>
-            </nav>
-          </div>
+        </div>
+        <footer className="app-footer mt-10 flex flex-wrap items-center justify-between gap-4 border-t border-slate-200 py-6 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+          <span>© {new Date().getFullYear()} TruthLens AI · Read with care.</span>
+          <nav aria-label="Footer navigation" className="flex flex-wrap gap-x-5 gap-y-2">
+            <a href="/privacy" onClick={(event) => { event.preventDefault(); setInternalRoute('privacy'); }}>Privacy</a>
+            <a href="/terms" onClick={(event) => { event.preventDefault(); setInternalRoute('terms'); }}>Terms</a>
+            <a href="mailto:hello@truthlens.ai">Contact</a>
+            <a href="https://github.com/Devx2107/TruthLens_AI" target="_blank" rel="noreferrer">GitHub</a>
+          </nav>
         </footer>
       </div>
     </div>

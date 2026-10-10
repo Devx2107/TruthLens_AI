@@ -1,10 +1,8 @@
-import React, { useState } from 'react';
-import { AlertCircle, AlertTriangle, Bell, CheckCircle2, Copy, ExternalLink, FileDown, History, Info, Link2, ShieldCheck, Sparkles, ThumbsDown, ThumbsUp } from 'lucide-react';
-import type { AnalysisResult } from '../types';
+﻿import { useState } from 'react';
+import { AlertTriangle, Bell, CheckCircle2, Copy, ExternalLink, FileDown, Link2, RefreshCw, Share2, ShieldCheck, ThumbsDown, ThumbsUp } from 'lucide-react';
+import type { AnalysisResult, EvidenceLink } from '../types';
 import CredibilityMeter from './CredibilityMeter';
 import { copyShareCardImage, downloadShareCardPng, printAnalysisReport } from '../lib/share';
-
-void React;
 
 interface ResultCardProps {
   result: AnalysisResult;
@@ -17,240 +15,51 @@ interface ResultCardProps {
   revisions?: AnalysisResult[];
 }
 
-function scoreTone(riskLevel: AnalysisResult['riskLevel']) {
-  if (riskLevel === 'Low') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200';
-  if (riskLevel === 'Medium') return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
-  return 'border-rose-500/30 bg-rose-500/10 text-rose-200';
-}
+const riskStyle = {
+  Low: 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:border-emerald-700',
+  Medium: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-900/30 dark:text-amber-200 dark:border-amber-700',
+  High: 'bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-900/30 dark:text-rose-200 dark:border-rose-700',
+};
+const verdictStyle = {
+  'Likely true': 'text-emerald-800 dark:text-emerald-300',
+  Mixed: 'text-amber-800 dark:text-amber-300',
+  'Likely false': 'text-rose-800 dark:text-rose-300',
+};
 
-function verdictTone(verdict: AnalysisResult['claims'][number]['verdict']) {
-  if (verdict === 'Likely true') return 'text-emerald-400';
-  if (verdict === 'Mixed') return 'text-amber-400';
-  return 'text-rose-400';
-}
-
-function riskIcon(riskLevel: AnalysisResult['riskLevel']) {
-  if (riskLevel === 'Low') return <CheckCircle2 className="h-5 w-5 text-emerald-400" />;
-  if (riskLevel === 'Medium') return <AlertTriangle className="h-5 w-5 text-amber-400" />;
-  return <AlertCircle className="h-5 w-5 text-rose-400" />;
+function EvidenceItem({ item }: { item: EvidenceLink }) {
+  const label = item.kind === 'fact-check' ? 'Fact check' : item.kind === 'primary' ? 'Primary source' : 'Related reporting';
+  return <a href={item.url} target="_blank" rel="noopener noreferrer" className="group flex items-start justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm hover:border-teal-400 dark:border-slate-700 dark:bg-slate-900/40">
+    <span className="min-w-0"><span className="block font-semibold text-slate-900 group-hover:text-teal-700 dark:text-slate-100 dark:group-hover:text-teal-300">{item.title}</span><span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{label} · {item.publisher || 'Unknown publisher'}{item.strength ? ` · ${item.strength} match` : ''}{item.rating ? ` · ${item.rating}` : ''}</span></span><ExternalLink aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-teal-700 dark:text-teal-300" />
+  </a>;
 }
 
 export default function ResultCard({ result, onCopyLink, onUnpublish, onNewScan, onRefresh, onFeedback, onWatch, revisions = [] }: ResultCardProps) {
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
   const [feedbackComment, setFeedbackComment] = useState('');
   const [shareError, setShareError] = useState<string | null>(null);
-  if (result.engine === 'heuristic') {
-    return <article className="glass-panel rounded-[2rem] border border-amber-400/30 p-6"><h3 className="text-xl font-bold text-slate-950 dark:text-white">This older scan was not AI verified</h3><p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Its previous score has been hidden because wording-only scoring can be misleading. Run a fresh scan to get a Groq or Gemini analysis.</p>{onRefresh && <button type="button" onClick={onRefresh} className="mt-4 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-700 dark:text-cyan-100">Rescan with AI</button>}</article>;
-  }
-  return (
-    <article className="glass-panel overflow-hidden rounded-[2rem] p-5 sm:p-6 shadow-[0_20px_80px_rgba(15,23,42,0.18)] animate-reveal-up">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${scoreTone(result.riskLevel)}`}>
-              {riskIcon(result.riskLevel)}
-              {result.riskLevel} risk
-            </span>
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/5 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-white/5 dark:text-slate-300">
-              <Sparkles className="h-3.5 w-3.5" />
-              {result.engine === 'gemini' ? 'Gemini image analysis' : result.engine === 'groq' ? 'Groq analysis' : 'Limited local analysis'}
-            </span>
-            {result.fromCache && (
-              <span className="inline-flex items-center gap-2 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-200">
-                Cached result from {Math.max(0, Math.floor((Date.now() - +new Date(result.createdAt)) / 86400000))} days ago
-              </span>
-            )}
-          </div>
-
-          <h3 className="text-2xl font-black tracking-tight text-slate-950 dark:text-white">
-            {result.sourceTitle || result.input}
-          </h3>
-          <p className="max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-300">
-            {result.sourceDescription || result.summary}
-          </p>
-          {result.engine === 'groq' && <p className="rounded-2xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-100">Groq analyzed this claim. Check the cited reporting before relying on important conclusions.</p>}
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => { setShareError(null); void downloadShareCardPng(result).catch(() => setShareError('Unable to create the PNG. Please try again.')); }}
-            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 transition hover:-translate-y-0.5 hover:bg-white/15 dark:text-white"
-          >
-            <ShieldCheck className="h-4 w-4" />
-            Download PNG
-          </button>
-          <button type="button" onClick={() => { setShareError(null); void copyShareCardImage(result).catch(() => setShareError('Clipboard image access is unavailable in this browser.')); }} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white">
-            <Copy className="h-4 w-4" /> Copy share image
-          </button>
-          <button type="button" onClick={() => printAnalysisReport(result)} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white"><FileDown className="h-4 w-4" />Save PDF</button>
-          {onWatch && <button type="button" onClick={() => onWatch(result)} className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-700 dark:text-cyan-100"><Bell className="h-4 w-4" />Watch claim</button>}
-          {result.fromCache && onRefresh && <button type="button" onClick={onRefresh} className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">Rescan fresh</button>}
-          {onNewScan && <button type="button" onClick={onNewScan} className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 dark:text-white">New scan</button>}
-          {onCopyLink && (
-            <button
-              type="button"
-              onClick={() => onCopyLink(result)}
-              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-slate-900 transition hover:-translate-y-0.5 hover:bg-white/15 dark:text-white"
-            >
-              <Link2 className="h-4 w-4" />
-              {result.isPublic ? 'Copy public link' : 'Publish & copy link'}
-            </button>
-          )}
-          {onUnpublish && <button type="button" onClick={() => onUnpublish(result)} className="rounded-full border border-amber-400/30 bg-amber-400/10 px-4 py-2 text-sm font-semibold text-amber-700 dark:text-amber-100">Unpublish</button>}
-        </div>
-      </div>
-      {shareError && <p className="mt-3 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-sm text-rose-700 dark:text-rose-100">{shareError}</p>}
-
-      <div className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-        <div className="space-y-6">
-          <CredibilityMeter score={result.credibilityScore} confidence={result.confidence} riskLevel={result.riskLevel} />
-
-          <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
-              <Info className="h-4 w-4" />
-              Summary
-            </div>
-            <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{result.summary}</p>
-          </section>
-
-          {result.sourceCredibility && (
-            <section className="rounded-3xl border border-cyan-400/20 bg-cyan-400/5 p-4 dark:bg-cyan-400/10">
-              <div className="flex items-center justify-between gap-3">
-                <div><p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Publisher signal</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{result.sourceCredibility.domain}</p></div>
-                <span className="text-xl font-black text-cyan-200">{result.sourceCredibility.score}/100</span>
-              </div>
-              <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">{result.sourceCredibility.tier ?? result.sourceCredibility.label ?? 'Limited signal'} source tier. This describes publisher signals, not whether every claim is true.</p>
-              {result.sourceCredibility.signals?.length ? (
-                <div className="mt-3 flex flex-wrap gap-2">{result.sourceCredibility.signals.map((signal) => <span key={signal} className="rounded-full border border-white/10 px-2.5 py-1 text-xs text-slate-500 dark:text-slate-300">{signal}</span>)}</div>
-              ) : null}
-            </section>
-          )}
-
-          <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
-              <Sparkles className="h-4 w-4" />
-              Manipulation techniques
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {result.manipulationTechniques.length > 0 ? (
-                result.manipulationTechniques.map((technique, index) => (
-                  <span
-                    key={`${technique}-${index}`}
-                    className="animate-pop-in rounded-full border border-white/10 bg-slate-950/5 px-3 py-1 text-xs font-semibold text-slate-700 dark:bg-white/5 dark:text-slate-200"
-                    style={{ animationDelay: `${index * 90}ms` }}
-                  >
-                    {technique}
-                  </span>
-                ))
-              ) : (
-                <p className="text-sm text-slate-500 dark:text-slate-400">No obvious manipulation signals showed up in this scan.</p>
-              )}
-            </div>
-          </section>
-        </div>
-
-        <div className="space-y-4">
-          <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
-              <ShieldCheck className="h-4 w-4" />
-              Source details
-            </div>
-            <dl className="space-y-3 text-sm">
-              <div className="flex items-start justify-between gap-4">
-                <dt className="text-slate-500 dark:text-slate-400">Input type</dt>
-                <dd className="font-medium text-slate-700 dark:text-slate-200">{result.inputType === 'url' ? 'URL' : result.inputType === 'image' ? 'Image' : 'Text'}</dd>
-              </div>
-              <div className="flex items-start justify-between gap-4">
-                <dt className="text-slate-500 dark:text-slate-400">Source</dt>
-                <dd className="max-w-[14rem] truncate font-medium text-slate-700 dark:text-slate-200">
-                  {result.sourceTitle || result.sourceUrl || 'Local demo'}
-                </dd>
-              </div>
-              {result.sourceCredibility && (
-                <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <dt className="text-slate-500 dark:text-slate-400">Publisher signal</dt>
-                    <dd className="font-semibold text-cyan-700 dark:text-cyan-200">{result.sourceCredibility.label ?? result.sourceCredibility.tier ?? 'Limited signal'}</dd>
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                    {result.sourceCredibility.domain} · {result.sourceCredibility.score}/100. {result.sourceCredibility.rationale ?? result.sourceCredibility.signals?.join(', ') ?? 'No additional publisher context available.'}
-                  </p>
-                </div>
-              )}
-              <div className="flex items-start justify-between gap-4">
-                <dt className="text-slate-500 dark:text-slate-400">Scanned</dt>
-                <dd className="font-medium text-slate-700 dark:text-slate-200">
-                  {new Date(result.createdAt).toLocaleString()}
-                </dd>
-              </div>
-              {result.detectedLanguage && <div className="flex items-start justify-between gap-4"><dt className="text-slate-500 dark:text-slate-400">Language</dt><dd className="font-medium text-slate-700 dark:text-slate-200">{result.detectedLanguage}{result.analysisLanguage ? ` / ${result.analysisLanguage}` : ''}</dd></div>}
-            </dl>
-          </section>
-
-          {result.claims.length > 0 && (
-            <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5">
-              <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
-                <Sparkles className="h-4 w-4" />
-                Claim breakdown
-              </div>
-              <div className="space-y-3">
-                {result.claims.map((claim, index) => (
-                  <div
-                    key={`${claim.claim}-${index}`}
-                    className="animate-pop-in rounded-2xl border border-white/10 bg-white/40 p-3 dark:bg-slate-900/60"
-                    style={{ animationDelay: `${index * 110}ms` }}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="text-sm font-medium text-slate-800 dark:text-slate-100">{claim.claim}</p>
-                      <span className={`text-xs font-semibold ${verdictTone(claim.verdict)}`}>{claim.verdict}</span>
-                    </div>
-                    <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{claim.rationale}</p>
-                    {claim.evidence && claim.evidence.length > 0 && <div className="mt-3 space-y-2"><p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-600 dark:text-cyan-300">Evidence and fact checks</p>{claim.evidence.map((item) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="block rounded-xl border border-cyan-400/20 bg-cyan-400/5 p-2 text-xs text-cyan-700 hover:bg-cyan-400/10 dark:text-cyan-200"><span className="flex items-start gap-1.5"><ExternalLink className="mt-0.5 h-3 w-3 shrink-0" /><span>{item.title}{item.publisher ? ` · ${item.publisher}` : ''}</span></span><span className="mt-1 flex flex-wrap gap-1.5 pl-4 text-[10px] uppercase tracking-wide"><span>{item.kind === 'fact-check' ? 'Verified fact check' : item.kind === 'primary' ? 'Primary source' : 'Related reporting'}</span><span>· {item.strength ?? 'Related'}</span>{item.rating && <span>· Rating: {item.rating}</span>}{item.reviewDate && <span>· {new Date(item.reviewDate).toLocaleDateString()}</span>}</span></a>)}</div>}
-                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-indigo-400 transition-all duration-700"
-                        style={{ width: `${claim.score}%` }}
-                      />
-                    </div>
-                    <div className="mt-2 flex items-center justify-between text-[11px] uppercase tracking-[0.18em] text-slate-400">
-                      <span>{claim.score}/100</span>
-                      <span>{claim.confidence}% confidence</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {result.warnings.length > 0 && (
-            <section className="rounded-3xl border border-amber-500/20 bg-amber-500/10 p-4 text-amber-50">
-              <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-                <AlertTriangle className="h-4 w-4" />
-                Notes
-              </div>
-              <ul className="space-y-2 text-sm text-amber-50/90">
-                {result.warnings.map((warning, index) => (
-                  <li key={`${warning}-${index}`} className="flex gap-2">
-                    <span className="mt-1 text-amber-300">•</span>
-                    <span>{warning}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
-              <Info className="h-4 w-4" />
-              Full explanation
-            </div>
-            <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{result.explanation}</p>
-          </section>
-          {revisions.length > 1 && <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5"><div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200"><History className="h-4 w-4" />Correction history</div><div className="space-y-2">{revisions.map((revision, index) => <div key={`${revision.id}-${index}`} className="flex items-center justify-between rounded-xl border border-white/10 px-3 py-2 text-xs"><span>{new Date(revision.createdAt).toLocaleString()}</span><span className="font-semibold">{revision.credibilityScore}/100 · {revision.riskLevel}</span></div>)}</div></section>}
-          {onFeedback && <section className="rounded-3xl border border-white/10 bg-slate-950/5 p-4 dark:bg-white/5"><div className="flex items-center justify-between"><p className="text-sm text-slate-600 dark:text-slate-300">Was this verdict useful?</p><div className="flex gap-2"><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('up'); onFeedback('up', feedbackComment.trim() || undefined); }} className={`rounded-full border p-2 ${feedback === 'up' ? 'border-emerald-400 text-emerald-300' : 'border-white/10 text-slate-400'}`} aria-label="Agree with verdict"><ThumbsUp className="h-4 w-4" /></button><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('down'); onFeedback('down', feedbackComment.trim() || undefined); }} className={`rounded-full border p-2 ${feedback === 'down' ? 'border-rose-400 text-rose-300' : 'border-white/10 text-slate-400'}`} aria-label="Disagree with verdict"><ThumbsDown className="h-4 w-4" /></button></div></div><input value={feedbackComment} onChange={(event) => setFeedbackComment(event.target.value)} disabled={Boolean(feedback)} maxLength={500} placeholder="Optional note for the review team" className="mt-3 w-full rounded-xl border border-slate-300 bg-white/70 px-3 py-2 text-sm dark:border-white/10 dark:bg-slate-900/70" /></section>}
-        </div>
-      </div>
-    </article>
-  );
+  const action = 'inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:border-teal-500 hover:text-teal-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100';
+  if (result.engine === 'heuristic') return <article className="glass-panel rounded-2xl p-6"><h2 className="font-editorial text-2xl font-bold">This older scan was not AI verified</h2><p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Its previous score has been hidden because wording alone can be misleading.</p>{onRefresh && <button type="button" onClick={onRefresh} className={`${action} mt-4`}>Rescan with AI</button>}</article>;
+  const allEvidence = result.claims.flatMap((claim) => claim.evidence ?? []);
+  const uniqueEvidence = Array.from(new Map(allEvidence.map((item) => [item.url, item])).values());
+  const factChecks = uniqueEvidence.filter((item) => item.kind === 'fact-check');
+  const otherEvidence = uniqueEvidence.filter((item) => item.kind !== 'fact-check');
+  return <article className="glass-panel animate-reveal-up rounded-2xl">
+    <header className="border-b border-slate-200 px-5 py-6 dark:border-slate-700 sm:px-8">
+      <div className="flex flex-wrap items-center gap-2"><span className={`rounded-full border px-3 py-1 text-xs font-bold ${riskStyle[result.riskLevel]}`}>{result.riskLevel} risk</span><span className="text-xs font-medium text-slate-500 dark:text-slate-400">{result.engine === 'gemini' ? 'Gemini analysis' : 'Groq analysis'} · {new Date(result.createdAt).toLocaleString()}</span>{result.fromCache && <span className="text-xs text-slate-500 dark:text-slate-400">· Saved result</span>}</div>
+      <h2 className="font-editorial mt-4 break-words text-2xl font-bold leading-tight text-slate-950 dark:text-white sm:text-3xl">{result.sourceTitle || result.input}</h2>
+      <p className="mt-3 max-w-3xl text-base leading-7 text-slate-700 dark:text-slate-200">{result.summary}</p>
+      {result.sourceDescription && <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">{result.sourceDescription}</p>}
+    </header>
+    <div className="space-y-7 px-5 py-6 sm:px-8">
+      <section aria-label="Credibility assessment" className="rounded-2xl bg-[#eff5ee] p-5 dark:bg-[#243d34]"><CredibilityMeter score={result.credibilityScore} confidence={result.confidence} riskLevel={result.riskLevel} /><p className="mt-4 text-xs text-slate-600 dark:text-slate-300">An AI estimate based on the available context. A score does not prove a claim true or false.</p></section>
+      {result.warnings.length > 0 && <section role="note" className="rounded-2xl border border-amber-300 bg-amber-50 p-5 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"><h3 className="flex items-center gap-2 text-sm font-bold"><AlertTriangle className="h-4 w-4" />Important notes</h3><ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{result.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul></section>}
+      <section><div className="flex items-baseline justify-between gap-3"><h3 className="font-editorial text-2xl font-bold">Claim breakdown</h3><span className="text-xs text-slate-500 dark:text-slate-400">{result.claims.length} claim{result.claims.length === 1 ? '' : 's'}</span></div>{result.claims.length ? <div className="mt-4 space-y-3">{result.claims.map((claim, index) => <div key={`${claim.claim}-${index}`} className="rounded-2xl border border-slate-200 p-4 dark:border-slate-700"><div className="flex flex-wrap items-start justify-between gap-2"><p className="max-w-2xl font-semibold text-slate-900 dark:text-white">{claim.claim}</p><span className={`text-sm font-bold ${verdictStyle[claim.verdict]}`}>{claim.verdict}</span></div><p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{claim.rationale}</p><p className="mt-3 text-xs font-medium text-slate-500 dark:text-slate-400">Credibility {claim.score}/100 · Confidence {claim.confidence}%</p></div>)}</div> : <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">No separate claims were identified in this scan.</p>}</section>
+      <section><h3 className="font-editorial text-2xl font-bold">Supporting evidence</h3><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Open sources and read the original context before relying on this assessment.</p>{uniqueEvidence.length ? <div className="mt-4 space-y-5">{factChecks.length > 0 && <div><h4 className="mb-2 text-xs font-bold uppercase tracking-widest text-teal-800 dark:text-teal-300">Fact-check matches</h4><div className="space-y-2">{factChecks.map((item) => <EvidenceItem key={item.url} item={item} />)}</div></div>}{otherEvidence.length > 0 && <div><h4 className="mb-2 text-xs font-bold uppercase tracking-widest text-teal-800 dark:text-teal-300">Sources and related reporting</h4><div className="space-y-2">{otherEvidence.map((item) => <EvidenceItem key={item.url} item={item} />)}</div></div>}</div> : <p className="mt-4 rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">No external evidence links were returned for this scan. Treat the conclusion as unverified.</p>}</section>
+      {result.manipulationTechniques.length > 0 && <section><h3 className="text-sm font-bold text-slate-900 dark:text-white">Language signals</h3><div className="mt-2 flex flex-wrap gap-2">{result.manipulationTechniques.map((item, index) => <span key={`${item}-${index}`} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">{item}</span>)}</div></section>}
+      <div className="space-y-2 border-t border-slate-200 pt-5 dark:border-slate-700"><details className="rounded-xl border border-slate-200 p-4 dark:border-slate-700"><summary className="cursor-pointer font-semibold">Full explanation</summary><p className="mt-3 text-sm leading-7 text-slate-600 dark:text-slate-300">{result.explanation}</p></details><details className="rounded-xl border border-slate-200 p-4 dark:border-slate-700"><summary className="cursor-pointer font-semibold">Source and scan details</summary><dl className="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-300"><div><dt className="font-semibold">Submitted as</dt><dd>{result.inputType.toUpperCase()}</dd></div>{result.sourceUrl && <div><dt className="font-semibold">Source URL</dt><dd className="break-all">{result.sourceUrl}</dd></div>}{result.sourceCredibility && <div><dt className="font-semibold">Publisher signal</dt><dd>{result.sourceCredibility.domain} · {result.sourceCredibility.score}/100 · {result.sourceCredibility.tier ?? result.sourceCredibility.label ?? 'Limited signal'}. This describes the publisher, not the truth of every claim.</dd></div>}{result.detectedLanguage && <div><dt className="font-semibold">Language</dt><dd>{result.detectedLanguage}{result.analysisLanguage ? ` / ${result.analysisLanguage}` : ''}</dd></div>}</dl></details>{revisions.length > 1 && <details className="rounded-xl border border-slate-200 p-4 dark:border-slate-700"><summary className="cursor-pointer font-semibold">Correction history</summary><div className="mt-3 space-y-2 text-sm">{revisions.map((revision, index) => <p key={`${revision.id}-${index}`}>{new Date(revision.createdAt).toLocaleString()} · {revision.credibilityScore}/100 · {revision.riskLevel} risk</p>)}</div></details>}</div>
+      <section className="flex flex-wrap gap-2 border-t border-slate-200 pt-5 dark:border-slate-700" aria-label="Result actions"><details className="relative"><summary className={`${action} cursor-pointer list-none`}><Share2 className="h-4 w-4" />Share and export</summary><div className="absolute left-0 z-20 mt-2 flex min-w-56 flex-col gap-1 rounded-xl border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-700 dark:bg-slate-900"><button type="button" onClick={() => { setShareError(null); void downloadShareCardPng(result).catch(() => setShareError('Unable to create the PNG. Please try again.')); }} className={action}><ShieldCheck className="h-4 w-4" />Download PNG</button><button type="button" onClick={() => { setShareError(null); void copyShareCardImage(result).catch(() => setShareError('Clipboard image access is unavailable.')); }} className={action}><Copy className="h-4 w-4" />Copy share image</button><button type="button" onClick={() => printAnalysisReport(result)} className={action}><FileDown className="h-4 w-4" />Save PDF</button>{onCopyLink && <button type="button" onClick={() => onCopyLink(result)} className={action}><Link2 className="h-4 w-4" />{result.isPublic ? 'Copy public link' : 'Publish & copy link'}</button>}{onUnpublish && <button type="button" onClick={() => onUnpublish(result)} className={action}>Unpublish scan</button>}</div></details>{onWatch && <button type="button" onClick={() => onWatch(result)} className={action}><Bell className="h-4 w-4" />Watch claim</button>}{onRefresh && <button type="button" onClick={onRefresh} className={action}><RefreshCw className="h-4 w-4" />{result.fromCache ? 'Rescan fresh' : 'Rescan'}</button>}{onNewScan && <button type="button" onClick={onNewScan} className={action}>New scan</button>}</section>
+      {shareError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{shareError}</p>}
+      {onFeedback && <section className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><div className="flex items-center justify-between gap-3"><p className="text-sm font-semibold">Was this analysis useful?</p><div className="flex gap-2"><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('up'); onFeedback('up', feedbackComment.trim() || undefined); }} aria-label="Helpful analysis" className={action}><ThumbsUp className="h-4 w-4" /></button><button type="button" disabled={Boolean(feedback)} onClick={() => { setFeedback('down'); onFeedback('down', feedbackComment.trim() || undefined); }} aria-label="Unhelpful analysis" className={action}><ThumbsDown className="h-4 w-4" /></button></div></div><label htmlFor={`feedback-${result.id}`} className="mt-3 block text-xs font-medium text-slate-600 dark:text-slate-300">Optional note for the review team</label><input id={`feedback-${result.id}`} value={feedbackComment} onChange={(event) => setFeedbackComment(event.target.value)} disabled={Boolean(feedback)} maxLength={500} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900" />{feedback && <p className="mt-2 flex items-center gap-1 text-xs text-teal-700 dark:text-teal-300"><CheckCircle2 className="h-3.5 w-3.5" />Feedback sent</p>}</section>}
+    </div>
+  </article>;
 }

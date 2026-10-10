@@ -59,11 +59,9 @@ export async function submitAnalysisFeedback(scanId: string, rating: 'up' | 'dow
 }
 
 export async function fetchTrendingScans() {
-  try {
-    const response = await apiFetch('?feed=trending');
-    if (!response.ok) return [];
-    return ((await response.json()) as { results?: AnalysisResult[] }).results ?? [];
-  } catch { return [] as AnalysisResult[]; }
+  const response = await apiFetch('?feed=trending');
+  if (!response.ok) throw await responseError(response);
+  return ((await response.json()) as { results?: AnalysisResult[] }).results ?? [];
 }
 
 export async function fetchPublicScan(scanId: string) {
